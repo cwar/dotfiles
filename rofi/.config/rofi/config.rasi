@@ -1,0 +1,10 @@
+configuration {
+  modi: "drun,run";
+  show-icons: true;
+  icon-theme: "Papirus";
+  display-drun: "";
+  display-run: "";
+  drun-display-format: "{name}";
+}
+
+@theme "tokyo-night"
