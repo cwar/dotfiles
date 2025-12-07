@@ -56,6 +56,9 @@ keybind = super+v=paste_from_clipboard
 confirm-close-surface = false
 quit-after-last-window-closed = true
 
+# Start in tmux (new session per window)
+command = tmux
+
 # Force close without confirmation
 keybind = super+w=close_surface
 
