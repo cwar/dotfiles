@@ -1,5 +1,5 @@
 * {
-  font-family: "JetBrainsMono Nerd Font", monospace;
+  font-family: "JetBrainsMono Nerd Font", "Symbols Nerd Font Mono", monospace;
   font-size: 13px;
 }
 
@@ -26,8 +26,8 @@ window#waybar {
   border-radius: 4px;
 }
 
-#clock, #battery, #pulseaudio, #tray {
-  padding: 0 12px;
+#clock, #battery, #wireplumber, #tray, #network {
+  padding: 0 6px;
 }
 
 #battery.charging {
@@ -39,5 +39,9 @@ window#waybar {
 }
 
 #battery.critical:not(.charging) {
+  color: #f7768e;
+}
+
+#network.disconnected {
   color: #f7768e;
 }

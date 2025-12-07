@@ -2,11 +2,11 @@
   "layer": "top",
   "position": "top",
   "height": 30,
-  "spacing": 8,
+  "spacing": 4,
 
   "modules-left": ["hyprland/workspaces"],
   "modules-center": ["clock"],
-  "modules-right": ["pulseaudio", "battery", "tray"],
+  "modules-right": ["network", "wireplumber", "battery", "tray"],
 
   "hyprland/workspaces": {
     "format": "{id}"
@@ -17,20 +17,25 @@
   },
 
   "battery": {
-    "format": "{icon} {capacity}%",
-    "format-icons": ["", "", "", "", ""]
+    "format": "🔋 {capacity}%",
+    "format-charging": "⚡ {capacity}%"
   },
 
-  "pulseaudio": {
-    "format": "{icon} {volume}%",
-    "format-muted": " muted",
-    "format-icons": {
-      "default": ["", "", ""]
-    },
+  "wireplumber": {
+    "format": "🔊 {volume}%",
+    "format-muted": "🔇",
     "on-click": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
   },
 
   "tray": {
     "spacing": 10
+  },
+
+  "network": {
+    "format-wifi": "📶",
+    "format-ethernet": "🌐 {ipaddr}",
+    "format-disconnected": "❌ Offline",
+    "tooltip-format": "{ifname}: {ipaddr}",
+    "on-click": "ghostty -e nmtui"
   }
 }
