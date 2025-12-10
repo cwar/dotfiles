@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Crash Override
+Description=Hackers movie boot screen
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/crash-override
+ScriptFile=/usr/share/plymouth/themes/crash-override/crash-override.script

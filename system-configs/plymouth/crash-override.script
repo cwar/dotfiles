@@ -1,0 +1,30 @@
+# Crash Override boot animation
+
+# Load all frames
+for (i = 1; i <= 100; i++) {
+	if (i < 10)
+		frames[i] = Image("frame000" + i + ".png");
+	else if (i < 100)
+		frames[i] = Image("frame00" + i + ".png");
+	else
+		frames[i] = Image("frame0" + i + ".png");
+}
+
+# Create sprite
+sprite = Sprite();
+sprite.SetX(Window.GetX() + Window.GetWidth() / 2 -
+		frames[1].GetWidth() / 2);
+sprite.SetY(Window.GetY() + Window.GetHeight() / 2 -
+		frames[1].GetHeight() / 2);
+
+# Animation counter
+frame_idx = 1;
+
+fun refresh_callback() {
+	sprite.SetImage(frames[frame_idx]);
+	frame_idx++;
+	if (frame_idx > 100)
+		frame_idx = 1;
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);
