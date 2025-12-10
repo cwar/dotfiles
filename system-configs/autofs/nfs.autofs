@@ -1,0 +1,1 @@
+/nfs    /etc/autofs/auto.nfs    --timeout=300 --ghost

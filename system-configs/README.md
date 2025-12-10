@@ -14,6 +14,10 @@ System-level configs that require sudo to install (can't be managed by stow).
 - `crash-override.script` → `/usr/share/plymouth/themes/crash-override/`
 - `frames.tar.gz` - 100 animation frames
 
+### Autofs (NFS auto-mounting)
+- `nfs.autofs` → `/etc/autofs/auto.master.d/nfs.autofs` - Master map entry
+- `auto.nfs` → `/etc/autofs/auto.nfs` - NFS share mappings for cwarstorage
+
 ## Install
 
 ```bash

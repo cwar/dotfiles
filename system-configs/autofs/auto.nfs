@@ -1,0 +1,17 @@
+movies-4k       -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/movies-4k
+movies          -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/movies
+photos          -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/photos
+kglw            -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/kglw
+comics          -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/comics
+livemusicvideos -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/Live\ Music\ Videos
+anime           -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/anime
+youtubekids     -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/youtubekids
+mets            -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/mets
+music           -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/music
+downloads       -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/downloads
+audiobooks      -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/audiobooks
+ebooks          -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/ebooks
+code            -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/code
+pv              -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/pv
+cam             -fstype=nfs,rw,soft,intr    cwarstorage:/volume2/cam
+media           -fstype=nfs,rw,soft,intr    cwarstorage:/volume1/media

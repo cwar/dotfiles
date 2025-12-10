@@ -22,4 +22,10 @@ tar -xzf "$SCRIPT_DIR/plymouth/frames.tar.gz" -C /usr/share/plymouth/themes/cras
 echo "Setting Plymouth theme..."
 plymouth-set-default-theme -R crash-override
 
+echo "Installing autofs configs..."
+mkdir -p /etc/autofs/auto.master.d
+cp "$SCRIPT_DIR/autofs/nfs.autofs" /etc/autofs/auto.master.d/
+cp "$SCRIPT_DIR/autofs/auto.nfs" /etc/autofs/
+systemctl enable --now autofs
+
 echo "Done!"
