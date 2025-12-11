@@ -1,0 +1,4 @@
+[[mgr.prepend_keymap]]
+on = ["g", "n"]
+run = "cd /nfs"
+desc = "Go to NFS shares"
