@@ -1,0 +1,9 @@
+[opener]
+audio = [
+    { run = 'mpv --no-video "$@"', block = true, desc = "Play audio" }
+]
+
+[open]
+prepend_rules = [
+    { mime = "audio/*", use = "audio" }
+]
