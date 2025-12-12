@@ -116,5 +116,8 @@ alias gs='git status'
 # bat: better cat with syntax highlighting
 alias ff="fzf --preview 'bat --style=numbers --color=always {}'"
 
+# lazygit
+alias lg='lazygit'
+
 # starship prompt
 eval "$(starship init zsh)"
