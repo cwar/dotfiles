@@ -1,0 +1,35 @@
+#!/bin/bash
+# Launch lazygit, using the cwd of the focused terminal if applicable
+
+# Check if lazygit is already running and focus it
+WINDOW_ADDRESS=$(hyprctl clients -j | jq -r \
+  '.[]|select(.title|test("^lazygit$"))|.address' | head -n1)
+
+if [[ -n $WINDOW_ADDRESS ]]; then
+  hyprctl dispatch focuswindow "address:$WINDOW_ADDRESS"
+  exit 0
+fi
+
+# Get the focused window info
+FOCUSED=$(hyprctl activewindow -j)
+FOCUSED_CLASS=$(echo "$FOCUSED" | jq -r '.class // ""')
+
+# Default to home directory
+CWD="$HOME"
+
+# If focused on a terminal with tmux, get the current pane's path
+if [[ "$FOCUSED_CLASS" =~ (ghostty|kitty|Alacritty|foot|wezterm) ]]; then
+  if pgrep tmux > /dev/null; then
+    # Send a harmless escape key to wake tmux's focus tracking
+    wtype -P escape -p escape 2>/dev/null
+    sleep 0.05
+
+    # Get path from tmux's perspective of the active pane
+    TMUX_CWD=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
+    if [[ -n "$TMUX_CWD" && -d "$TMUX_CWD" ]]; then
+      CWD="$TMUX_CWD"
+    fi
+  fi
+fi
+
+exec ghostty --title=lazygit -e bash -c "cd '$CWD' && lazygit"
