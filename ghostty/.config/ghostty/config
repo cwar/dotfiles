@@ -49,9 +49,7 @@
 # resize-overlay-duration = 4s 200ms
 keybind = shift+enter=text:\x1b\r
 
-# Copy/paste with Super+C/V
-keybind = super+c=copy_to_clipboard
-keybind = super+v=paste_from_clipboard
+# Copy/paste handled by Hyprland sendshortcut (Ctrl+Insert / Shift+Insert)
 
 confirm-close-surface = false
 quit-after-last-window-closed = true
