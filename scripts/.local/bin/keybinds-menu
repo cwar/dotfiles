@@ -1,0 +1,97 @@
+#!/bin/bash
+# Keybindings menu - shows all keybindings and optionally executes them
+
+declare -A bindings=(
+    # Window Management
+    ["Super + Return: Open terminal"]="ghostty"
+    ["Super + W: Close window"]="hyprctl dispatch killactive"
+    ["Super + T: Toggle floating"]="hyprctl dispatch togglefloating"
+    ["Super + P: Toggle pseudo-tiling"]="hyprctl dispatch pseudo"
+    ["Super + J: Toggle split"]="hyprctl dispatch togglesplit"
+
+    # Focus
+    ["Super + Arrow: Move focus"]=""
+    ["Super + Left: Focus left"]="hyprctl dispatch movefocus l"
+    ["Super + Right: Focus right"]="hyprctl dispatch movefocus r"
+    ["Super + Up: Focus up"]="hyprctl dispatch movefocus u"
+    ["Super + Down: Focus down"]="hyprctl dispatch movefocus d"
+
+    # Swap Windows
+    ["Super + Shift + Arrow: Swap windows"]=""
+    ["Super + Shift + Left: Swap left"]="hyprctl dispatch swapwindow l"
+    ["Super + Shift + Right: Swap right"]="hyprctl dispatch swapwindow r"
+    ["Super + Shift + Up: Swap up"]="hyprctl dispatch swapwindow u"
+    ["Super + Shift + Down: Swap down"]="hyprctl dispatch swapwindow d"
+
+    # Move to Monitor
+    ["Super + Ctrl + Left: Move to left monitor"]="hyprctl dispatch movewindow mon:l"
+    ["Super + Ctrl + Right: Move to right monitor"]="hyprctl dispatch movewindow mon:r"
+
+    # Resize
+    ["Super + Alt + Arrow: Resize window"]=""
+    ["Super + Alt + Left: Shrink width"]="hyprctl dispatch resizeactive -50 0"
+    ["Super + Alt + Right: Grow width"]="hyprctl dispatch resizeactive 50 0"
+    ["Super + Alt + Up: Shrink height"]="hyprctl dispatch resizeactive 0 -50"
+    ["Super + Alt + Down: Grow height"]="hyprctl dispatch resizeactive 0 50"
+
+    # Workspaces
+    ["Super + 1-0: Switch to workspace 1-10"]=""
+    ["Super + Shift + 1-0: Move window to workspace"]=""
+    ["Super + S: Toggle scratchpad"]="hyprctl dispatch togglespecialworkspace magic"
+    ["Super + Shift + S: Move to scratchpad"]="hyprctl dispatch movetoworkspace special:magic"
+    ["Super + Scroll: Cycle workspaces"]=""
+
+    # Applications
+    ["Super + R / Space: App launcher (rofi)"]="rofi -show drun"
+    ["Super + E: File manager"]="ghostty -e yazi"
+    ["Super + F: Yazi file manager"]="ghostty -e yazi"
+    ["Super + Shift + A: Claude AI"]="chromium --app=https://claude.ai"
+    ["Super + Shift + B: Browser"]="chromium"
+    ["Super + Shift + T: System monitor (btop)"]="pgrep -x btop && hyprctl dispatch focuswindow title:btop || ghostty --title=btop -e btop"
+    ["Super + Shift + N: Neovim"]="ghostty -e nvim"
+    ["Super + Shift + D: Discord"]="discord --enable-features=UseOzonePlatform --ozone-platform=wayland"
+    ["Super + Shift + L: Clipboard to single line"]="wl-paste | tr -d '\n' | wl-copy"
+    ["Super + C: Copy (universal)"]=""
+    ["Super + V: Paste (universal)"]=""
+    ["Super + X: Cut (universal)"]=""
+    ["Super + Shift + V: Clipboard history"]="~/.local/bin/cliphist-rofi"
+
+    # Screenshots
+    ["Print: Screenshot area to clipboard"]="grim -g \"\$(slurp)\" - | wl-copy"
+    ["Shift + Print: Full screenshot to clipboard"]="grim - | wl-copy"
+    ["Super + Print: Screenshot area to file"]=""
+
+    # Media
+    ["Volume Up/Down: Adjust volume"]=""
+    ["Volume Mute: Toggle mute"]=""
+    ["Brightness Up/Down: Adjust brightness"]=""
+    ["Play/Pause: Media control"]=""
+
+    # Notifications
+    ["Super + ,: Dismiss notification"]="makoctl dismiss"
+    ["Super + Shift + ,: Dismiss all notifications"]="makoctl dismiss --all"
+    ["Super + Ctrl + ,: Toggle do-not-disturb"]="makoctl mode -t do-not-disturb"
+    ["Super + Alt + ,: Click last notification"]="makoctl invoke"
+
+    # System
+    ["Super + L: Lock screen"]="hyprlock"
+    ["Super + M: Exit Hyprland"]="hyprctl dispatch exit"
+    ["Super + K: Show this menu"]=""
+    ["Super + Shift + G: Lazygit (uses terminal cwd)"]="~/.local/bin/launch-lazygit"
+)
+
+# Build menu
+menu=""
+for key in "${!bindings[@]}"; do
+    menu+="$key\n"
+done
+
+# Sort and display
+selected=$(echo -e "$menu" | sort | rofi -dmenu -i -p "Keybindings" -theme-str 'window {width: 50%;} listview {lines: 20;}')
+
+if [ -n "$selected" ]; then
+    cmd="${bindings[$selected]}"
+    if [ -n "$cmd" ]; then
+        eval "$cmd" &
+    fi
+fi
