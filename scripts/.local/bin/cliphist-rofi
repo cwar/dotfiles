@@ -1,0 +1,5 @@
+#!/bin/bash
+selected=$(cliphist list | rofi -dmenu -p "Clipboard")
+if [ -n "$selected" ]; then
+    echo "$selected" | cliphist decode | wl-copy -t text/plain
+fi
