@@ -1,0 +1,18 @@
+os:
+  editor: nvim
+  editPreset: nvim
+git:
+  pagers:
+    - colorArg: always
+      pager: delta --dark --paging=never
+  merging:
+    manualCommit: false
+    args: ""
+gui:
+  showIcons: true
+  nerdFontsVersion: "3"
+  theme:
+    selectedLineBgColor:
+      - underline
+    selectedRangeBgColor:
+      - underline
