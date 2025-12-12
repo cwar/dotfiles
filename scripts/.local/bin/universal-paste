@@ -1,0 +1,20 @@
+#!/bin/bash
+# Universal paste - uses tmux paste for Ghostty, Ctrl+V for GUI apps
+
+window_class=$(hyprctl activewindow -j | jq -r '.class // empty')
+
+# Key codes: 29=ctrl, 42=shift, 47=v
+case "$window_class" in
+    com.mitchellh.ghostty)
+        # Ghostty runs tmux - paste directly via tmux
+        tmux set-buffer "$(wl-paste -n)" && tmux paste-buffer
+        ;;
+    kitty|Alacritty|foot|org.wezfurlong.wezterm|konsole|xterm*)
+        # Other terminals - Ctrl+Shift+V
+        ydotool key -d 12 29:1 42:1 47:1 47:0 42:0 29:0
+        ;;
+    *)
+        # GUI apps - Ctrl+V (with delay to ensure proper key release)
+        ydotool key -d 12 29:1 47:1 47:0 29:0
+        ;;
+esac

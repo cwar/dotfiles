@@ -1,0 +1,16 @@
+#!/bin/bash
+# Universal copy - sends Ctrl+Shift+C for terminals, Ctrl+C for everything else
+
+window_class=$(hyprctl activewindow -j | jq -r '.class // empty')
+
+# Key codes: 29=ctrl, 42=shift, 46=c
+case "$window_class" in
+    com.mitchellh.ghostty|kitty|Alacritty|foot|org.wezfurlong.wezterm|konsole|xterm*)
+        # Ctrl+Shift+C for terminals
+        ydotool key -d 12 29:1 42:1 46:1 46:0 42:0 29:0
+        ;;
+    *)
+        # Ctrl+C for GUI apps
+        ydotool key -d 12 29:1 46:1 46:0 29:0
+        ;;
+esac
