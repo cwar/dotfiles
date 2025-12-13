@@ -1,0 +1,123 @@
+#!/bin/bash
+# Claude Code Session Picker
+# Browse by workspace first, then by session within that workspace
+
+PROJECTS_DIR="$HOME/.claude/projects"
+
+if [[ ! -d "$PROJECTS_DIR" ]]; then
+    notify-send "Claude Sessions" "No sessions found"
+    exit 1
+fi
+
+# Build workspace list
+workspace_list=""
+for project_dir in "$PROJECTS_DIR"/*/; do
+    [[ ! -d "$project_dir" ]] && continue
+
+    project_name=$(basename "$project_dir")
+    project_path="${project_name//-//}"
+
+    # Count valid sessions
+    count=0
+    latest_mtime=0
+    for file in "$project_dir"/*.jsonl; do
+        [[ ! -f "$file" ]] && continue
+        [[ $(stat -c %s "$file") -eq 0 ]] && continue
+
+        session_id=$(basename "$file" .jsonl)
+        [[ "$session_id" == agent-* ]] && continue
+
+        summary=$(head -1 "$file" 2>/dev/null | jq -r '.summary // ""' 2>/dev/null)
+        [[ -z "$summary" || "$summary" == "null" ]] && continue
+
+        ((count++)) || true
+        mtime=$(stat -c %Y "$file" 2>/dev/null || echo "0")
+        [[ $mtime -gt $latest_mtime ]] && latest_mtime=$mtime
+    done
+
+    [[ $count -eq 0 ]] && continue
+
+    short_path=$(echo "$project_path" | sed 's|/home/cwar|~|')
+    workspace_list+="${latest_mtime}|${short_path} (${count} sessions)|${project_path}"$'\n'
+done
+
+if [[ -z "$workspace_list" ]]; then
+    notify-send "Claude Sessions" "No sessions found"
+    exit 1
+fi
+
+# Sort by mtime and show workspace picker
+sorted_ws=$(echo -n "$workspace_list" | sort -t'|' -k1 -rn)
+ws_display=$(echo "$sorted_ws" | cut -d'|' -f2)
+
+selected_ws=$(echo "$ws_display" | rofi -dmenu -i -p "Select Workspace" -theme-str 'window {width: 50%;}')
+
+[[ -z "$selected_ws" ]] && exit 0
+
+# Find the matching project path
+project_path=$(echo "$sorted_ws" | grep -F "$selected_ws" | head -1 | cut -d'|' -f3)
+project_dir="$PROJECTS_DIR/${project_path//\//-}"
+
+# Helper function for relative time
+time_ago() {
+    local seconds=$1
+    if [[ $seconds -lt 60 ]]; then
+        echo "${seconds} seconds ago"
+    elif [[ $seconds -lt 3600 ]]; then
+        echo "$((seconds / 60)) minutes ago"
+    elif [[ $seconds -lt 86400 ]]; then
+        echo "$((seconds / 3600)) hours ago"
+    elif [[ $seconds -lt 604800 ]]; then
+        echo "$((seconds / 86400)) days ago"
+    else
+        echo "$((seconds / 604800)) weeks ago"
+    fi
+}
+
+# Get sessions for selected workspace
+session_list=""
+now=$(date +%s)
+for file in "$project_dir"/*.jsonl; do
+    [[ ! -f "$file" ]] && continue
+    [[ $(stat -c %s "$file") -eq 0 ]] && continue
+
+    session_id=$(basename "$file" .jsonl)
+    [[ "$session_id" == agent-* ]] && continue
+
+    summary=$(head -1 "$file" 2>/dev/null | jq -r '.summary // ""' 2>/dev/null)
+    [[ -z "$summary" || "$summary" == "null" ]] && continue
+
+    mtime=$(stat -c %Y "$file" 2>/dev/null || echo "0")
+    age=$((now - mtime))
+    time_str=$(time_ago $age)
+
+    # Count messages (lines in jsonl, minus the summary line)
+    msg_count=$(($(wc -l < "$file") - 1))
+    [[ $msg_count -lt 0 ]] && msg_count=0
+
+    session_list+="${mtime}|${summary} - ${time_str} - ${msg_count} messages|${session_id}"$'\n'
+done
+
+if [[ -z "$session_list" ]]; then
+    notify-send "Claude Sessions" "No sessions in this workspace"
+    exit 1
+fi
+
+# Sort and show session picker
+sorted_sessions=$(echo -n "$session_list" | sort -t'|' -k1 -rn)
+session_display=$(echo "$sorted_sessions" | cut -d'|' -f2)
+
+selected_session=$(echo "$session_display" | rofi -dmenu -i -p "Select Session" -theme-str 'window {width: 60%;}')
+
+[[ -z "$selected_session" ]] && exit 0
+
+# Find matching session ID
+session_id=$(echo "$sorted_sessions" | grep -F "$selected_session" | head -1 | cut -d'|' -f3)
+
+if [[ -z "$session_id" ]]; then
+    notify-send "Claude Sessions" "Could not find session"
+    exit 1
+fi
+
+# Launch terminal with claude (interactive login shell to get full environment)
+exec ghostty --working-directory="$project_path" -e bash -lic "claude --resume '$session_id'"

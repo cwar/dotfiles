@@ -51,6 +51,7 @@ declare -A bindings=(
     ["Super + Shift + N: Neovim"]="ghostty -e nvim"
     ["Super + Shift + D: Discord"]="discord --enable-features=UseOzonePlatform --ozone-platform=wayland"
     ["Super + Shift + L: Clipboard to single line"]="wl-paste | tr -d '\n' | wl-copy"
+    ["Super + Shift + R: Resume Claude Code session"]="~/.local/bin/claude-sessions"
     ["Super + C: Copy (universal)"]=""
     ["Super + V: Paste (universal)"]=""
     ["Super + X: Cut (universal)"]=""
