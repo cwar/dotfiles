@@ -5,6 +5,10 @@ configuration {
   display-drun: "";
   display-run: "";
   drun-display-format: "{name}";
+  font: "JetBrainsMono Nerd Font 11";
+  hover-select: true;
+  me-select-entry: "";
+  me-accept-entry: "MousePrimary";
 }
 
 @theme "tokyo-night"
