@@ -1,0 +1,40 @@
+#!/bin/bash
+# Hackers-style screensaver using cmatrix
+# "Mess with the best, die like the rest"
+# Spawns on all monitors - exits all when any keypress detected
+
+# Kill any existing instances
+pkill cmatrix 2>/dev/null
+sleep 0.1
+
+# Get all monitor names
+monitors=$(hyprctl monitors -j | jq -r '.[].name')
+pids=()
+
+# Launch cmatrix on each monitor (window rules handle placement)
+for monitor in $monitors; do
+    ghostty \
+        --class="hackers-screensaver-instance" \
+        --title="cmatrix-$monitor" \
+        --command="cmatrix -b -C green -s -u 2" \
+        --fullscreen \
+        --gtk-single-instance=false \
+        --quit-after-last-window-closed=true \
+        --window-decoration=false \
+        --background="#000000" \
+        --foreground="#00ff00" &
+    pids+=($!)
+    sleep 0.3
+done
+
+# Wait for ANY process to exit, then kill all others
+while true; do
+    for pid in "${pids[@]}"; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            # One exited, kill all cmatrix instances
+            pkill cmatrix 2>/dev/null
+            exit 0
+        fi
+    done
+    sleep 0.2
+done

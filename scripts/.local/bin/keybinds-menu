@@ -75,6 +75,7 @@ declare -A bindings=(
 
     # System
     ["Super + L: Lock screen"]="hyprlock"
+    ["Super + Escape: Hackers screensaver"]="~/.local/bin/hackers-screensaver"
     ["Super + M: Exit Hyprland"]="hyprctl dispatch exit"
     ["Super + K: Show this menu"]=""
     ["Super + Shift + G: Lazygit (uses terminal cwd)"]="~/.local/bin/launch-lazygit"
