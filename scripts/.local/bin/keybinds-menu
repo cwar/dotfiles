@@ -57,10 +57,16 @@ declare -A bindings=(
     ["Super + X: Cut (universal)"]=""
     ["Super + Shift + V: Clipboard history"]="~/.local/bin/cliphist-rofi"
 
-    # Screenshots
+    # Screenshots - to clipboard
     ["Print: Screenshot area to clipboard"]="grim -g \"\$(slurp)\" - | wl-copy"
     ["Shift + Print: Full screenshot to clipboard"]="grim - | wl-copy"
+    ["Ctrl + Print: Screenshot focused window"]="grim -g \"\$(hyprctl activewindow -j | jq -r '\"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])\"')\" - | wl-copy"
     ["Super + Print: Screenshot area to file"]=""
+    # Screenshots - open in Satty
+    ["Alt + Print: Screenshot area (Satty)"]="grim -g \"\$(slurp)\" - | satty --filename -"
+    ["Super + Shift + Print: Full screenshot (Satty)"]="grim - | satty --filename -"
+    ["Super + Ctrl + Print: Screenshot window (Satty)"]="grim -g \"\$(hyprctl activewindow -j | jq -r '\"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])\"')\" - | satty --filename -"
+    ["Super + Alt + Print: Open clipboard in Satty"]="wl-paste | satty --filename -"
 
     # Media
     ["Volume Up/Down: Adjust volume"]=""
