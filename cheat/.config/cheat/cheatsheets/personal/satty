@@ -1,0 +1,54 @@
+---
+tags: [ screenshot, annotation, wayland ]
+---
+# General
+Enter               Save to clipboard & exit
+Esc                 Exit without saving
+Ctrl+z              Undo
+Ctrl+y              Redo
+Ctrl+s              Save to file
+Ctrl+Shift+s        Save with dialog
+Ctrl+c              Copy to clipboard
+Ctrl+t              Toggle toolbars
+Delete              Clear all annotations
+Alt+Arrows          Pan image
+
+# Tool selection
+p                   Pointer (select/move)
+b                   Brush (freehand)
+r                   Rectangle
+e                   Ellipse
+z                   Arrow
+i                   Line
+t                   Text
+m                   Numbered marker
+u                   Blur
+g                   Highlight
+c                   Crop
+
+# Colors
+1-9, 0              Select color from palette
+
+# Tool modifiers
+Shift               Snap angles (15°) for arrow/line
+Alt                 Center origin for rectangle/ellipse
+Shift               Square/circle constraint
+
+# Text tool
+Shift+Enter         Insert line break
+Ctrl+Left/Right     Word jump
+Ctrl+Backspace      Delete word
+Enter/Esc           Accept/discard text
+Ctrl+a              Select all
+Ctrl+Shift+c        Copy selection
+Ctrl+x              Cut
+Ctrl+v              Paste
+
+# Hyprland keybindings
+Print               Screenshot area → clipboard
+Shift+Print         Full screenshot → clipboard
+Ctrl+Print          Window screenshot → clipboard
+Alt+Print           Screenshot area → Satty
+Super+Shift+Print   Full screenshot → Satty
+Super+Ctrl+Print    Window screenshot → Satty
+Super+Alt+Print     Open clipboard in Satty
