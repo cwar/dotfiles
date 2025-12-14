@@ -86,6 +86,7 @@ declare -A bindings=(
     ["Super + M: Exit Hyprland"]="hyprctl dispatch exit"
     ["Super + K: Show this menu"]=""
     ["Super + Shift + G: Lazygit (uses terminal cwd)"]="~/.local/bin/launch-lazygit"
+    ["Super + G: Keyboard mouse control"]="wl-kbptr"
 )
 
 # Build menu
