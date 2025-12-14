@@ -1,3 +1,13 @@
+[plugin]
+prepend_preloaders = [
+    { name = "*.m4b", run = "mediainfo" },
+    { mime = "{audio,video,image}/*", run = "mediainfo" },
+]
+prepend_previewers = [
+    { name = "*.m4b", run = "mediainfo" },
+    { mime = "{audio,video,image}/*", run = "mediainfo" },
+]
+
 [opener]
 edit = [
     { run = 'nvim "$@"', block = true, desc = "Edit in nvim" }

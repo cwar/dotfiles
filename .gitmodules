@@ -1,0 +1,3 @@
+[submodule "yazi/.config/yazi/plugins/mediainfo.yazi"]
+	path = yazi/.config/yazi/plugins/mediainfo.yazi
+	url = https://github.com/boydaihungst/mediainfo.yazi.git
