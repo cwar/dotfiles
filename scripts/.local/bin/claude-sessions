@@ -9,13 +9,82 @@ if [[ ! -d "$PROJECTS_DIR" ]]; then
     exit 1
 fi
 
+# Helper function to extract session summary
+# Tries: 1) type:summary line, 2) first user message content
+get_session_summary() {
+    local file="$1"
+    local summary
+
+    # Try to find a dedicated summary line
+    summary=$(grep -m1 '"type"[[:space:]]*:[[:space:]]*"summary"' "$file" 2>/dev/null | jq -r '.summary // ""' 2>/dev/null)
+
+    if [[ -n "$summary" && "$summary" != "null" ]]; then
+        echo "$summary"
+        return
+    fi
+
+    # Fallback: get first user message content (truncated)
+    # Content can be a string OR an array of {type,text} objects
+    local user_line
+    user_line=$(grep -m1 '"type"[[:space:]]*:[[:space:]]*"user"' "$file" 2>/dev/null)
+
+    if [[ -n "$user_line" ]]; then
+        local content_type
+        content_type=$(echo "$user_line" | jq -r '.message.content | type' 2>/dev/null)
+
+        if [[ "$content_type" == "string" ]]; then
+            summary=$(echo "$user_line" | jq -r '.message.content // ""' 2>/dev/null | head -c 80)
+        elif [[ "$content_type" == "array" ]]; then
+            # Extract text from first content block
+            summary=$(echo "$user_line" | jq -r '.message.content[0].text // ""' 2>/dev/null | head -c 80)
+        fi
+
+        if [[ -n "$summary" && "$summary" != "null" ]]; then
+            if [[ ${#summary} -ge 80 ]]; then
+                summary="${summary}..."
+            fi
+            echo "$summary"
+            return
+        fi
+    fi
+
+    echo ""
+}
+
+# Helper function to count actual conversation messages
+count_messages() {
+    local file="$1"
+    local count
+    # Count lines with type "user" or type "assistant"
+    # Note: grep -c returns 0 with exit code 1 when no matches, so we capture and default
+    count=$(grep -c '"type"[[:space:]]*:[[:space:]]*"\(user\|assistant\)"' "$file" 2>/dev/null) || true
+    echo "${count:-0}"
+}
+
 # Build workspace list
 workspace_list=""
 for project_dir in "$PROJECTS_DIR"/*/; do
     [[ ! -d "$project_dir" ]] && continue
 
     project_name=$(basename "$project_dir")
+    # Convert dashes back to slashes, but we need to find the actual path
+    # since the conversion is lossy (both / and - become - in storage)
     project_path="${project_name//-//}"
+
+    # Try to find the actual existing path by checking filesystem
+    # Start with full slash conversion, then try preserving dashes progressively
+    if [[ ! -d "$project_path" ]]; then
+        # The naive conversion failed, try to find actual path
+        # by reading the cwd from a session file
+        for session_file in "$project_dir"/*.jsonl; do
+            [[ ! -f "$session_file" ]] && continue
+            actual_cwd=$(grep -m1 '"cwd"' "$session_file" 2>/dev/null | jq -r '.cwd // ""' 2>/dev/null)
+            if [[ -n "$actual_cwd" && -d "$actual_cwd" ]]; then
+                project_path="$actual_cwd"
+                break
+            fi
+        done
+    fi
 
     # Count valid sessions
     count=0
@@ -27,8 +96,12 @@ for project_dir in "$PROJECTS_DIR"/*/; do
         session_id=$(basename "$file" .jsonl)
         [[ "$session_id" == agent-* ]] && continue
 
-        summary=$(head -1 "$file" 2>/dev/null | jq -r '.summary // ""' 2>/dev/null)
-        [[ -z "$summary" || "$summary" == "null" ]] && continue
+        summary=$(get_session_summary "$file")
+        [[ -z "$summary" ]] && continue
+
+        # Skip sessions with no messages
+        msg_count=$(count_messages "$file")
+        [[ "$msg_count" -eq 0 ]] && continue
 
         ((count++)) || true
         mtime=$(stat -c %Y "$file" 2>/dev/null || echo "0")
@@ -54,8 +127,8 @@ selected_ws=$(echo "$ws_display" | rofi -dmenu -i -p "Select Workspace" -theme-s
 
 [[ -z "$selected_ws" ]] && exit 0
 
-# Find the matching project path
-project_path=$(echo "$sorted_ws" | grep -F "$selected_ws" | head -1 | cut -d'|' -f3)
+# Find the matching project path (exact field match)
+project_path=$(echo "$sorted_ws" | awk -F'|' -v sel="$selected_ws" '$2 == sel {print $3; exit}')
 project_dir="$PROJECTS_DIR/${project_path//\//-}"
 
 # Helper function for relative time
@@ -84,18 +157,18 @@ for file in "$project_dir"/*.jsonl; do
     session_id=$(basename "$file" .jsonl)
     [[ "$session_id" == agent-* ]] && continue
 
-    summary=$(head -1 "$file" 2>/dev/null | jq -r '.summary // ""' 2>/dev/null)
-    [[ -z "$summary" || "$summary" == "null" ]] && continue
+    summary=$(get_session_summary "$file")
+    [[ -z "$summary" ]] && continue
+
+    # Count actual user/assistant messages - skip empty sessions
+    msg_count=$(count_messages "$file")
+    [[ "$msg_count" -eq 0 ]] && continue
 
     mtime=$(stat -c %Y "$file" 2>/dev/null || echo "0")
     age=$((now - mtime))
     time_str=$(time_ago $age)
 
-    # Count messages (lines in jsonl, minus the summary line)
-    msg_count=$(($(wc -l < "$file") - 1))
-    [[ $msg_count -lt 0 ]] && msg_count=0
-
-    session_list+="${mtime}|${summary} - ${time_str} - ${msg_count} messages|${session_id}"$'\n'
+    session_list+="${mtime}|${summary} - ${time_str} - ${msg_count} msgs|${session_id}"$'\n'
 done
 
 if [[ -z "$session_list" ]]; then
@@ -111,8 +184,8 @@ selected_session=$(echo "$session_display" | rofi -dmenu -i -p "Select Session" 
 
 [[ -z "$selected_session" ]] && exit 0
 
-# Find matching session ID
-session_id=$(echo "$sorted_sessions" | grep -F "$selected_session" | head -1 | cut -d'|' -f3)
+# Find matching session ID (exact field match)
+session_id=$(echo "$sorted_sessions" | awk -F'|' -v sel="$selected_session" '$2 == sel {print $3; exit}')
 
 if [[ -z "$session_id" ]]; then
     notify-send "Claude Sessions" "Could not find session"
