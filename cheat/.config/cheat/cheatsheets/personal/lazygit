@@ -1,0 +1,79 @@
+---
+tags: [ git, tui ]
+---
+# Global
+?           Help / keybindings
+q           Quit / go back
+Esc         Cancel / close
+<C-r>       Switch repo
++           Next screen mode (normal/half/full)
+_           Previous screen mode
+
+# Navigation
+h/l         Switch panels (left/right)
+j/k         Move up/down in list
+[/]         Switch tabs
+{/}         Scroll diff up/down
+<C-d/u>     Scroll main panel (half page)
+
+# Files Panel (1)
+Space       Stage/unstage file
+a           Stage all / unstage all
+d           View 'discard changes' options
+e           Edit file in editor
+o           Open file
+c           Commit staged changes
+A           Amend last commit
+i           Add to .gitignore
+
+# Branches Panel (2)
+Space       Checkout branch
+n           New branch
+d           Delete branch
+r           Rebase current branch onto selected
+M           Merge selected into current
+f           Fast-forward to upstream
+c           Checkout by name
+
+# Commits Panel (3)
+Space       Checkout commit
+r           Revert commit
+R           Rename commit (reword)
+g           View reset options
+s           Squash down
+f           Fixup commit
+d           Drop commit
+e           Edit commit
+p           Pick commit (when rebasing)
+t           Create tag
+<C-j/k>     Move commit up/down (when rebasing)
+
+# Stash Panel (4)
+Space       Apply stash
+g           Pop stash
+d           Drop stash
+n           New stash
+
+# Staging View
+Enter       Stage individual lines/hunks
+a           Stage all hunks
+d           Discard hunk
+e           Edit hunk
+
+# Remotes
+f           Fetch remote
+p           Pull from remote
+P           Push to remote
+u           Set upstream
+
+# Searching
+/           Start search
+n/N         Next/prev search result
+
+# Misc
+m           View merge/rebase options
+x           Open command menu
+z           Undo (reflog)
+<C-z>       Redo (reflog)
+@           Open command log
+:           Execute custom command

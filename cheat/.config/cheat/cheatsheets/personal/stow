@@ -1,0 +1,49 @@
+---
+tags: [ dotfiles, symlink ]
+---
+# Basic Usage (run from ~/dotfiles)
+stow <package>          Symlink package to $HOME
+stow -D <package>       Unstow (remove symlinks)
+stow -R <package>       Restow (unstow + stow)
+
+# Common Flags
+-n, --no                Dry run (simulate, don't do anything)
+-v, --verbose           Show what's being done
+-t <dir>                Target directory (default: parent of stow dir)
+-d <dir>                Stow directory (default: current dir)
+
+# Conflict Handling
+--adopt                 Adopt existing files into stow package
+                        (moves target files into stow dir, then symlinks)
+--override=<regex>      Override files matching regex
+
+# Multiple Packages
+stow */                 Stow all packages
+stow zsh nvim tmux      Stow multiple packages
+
+# Examples
+cd ~/dotfiles && stow zsh           Symlink zsh config
+cd ~/dotfiles && stow -D zsh        Remove zsh symlinks
+cd ~/dotfiles && stow -R zsh        Re-symlink after changes
+stow -nvt ~ zsh                     Dry run, verbose, target home
+
+# Typical dotfiles structure
+~/dotfiles/
+├── zsh/
+│   └── .zshrc              -> ~/.zshrc
+├── nvim/
+│   └── .config/
+│       └── nvim/           -> ~/.config/nvim
+└── tmux/
+    └── .tmux.conf          -> ~/.tmux.conf
+
+# Troubleshooting
+# "existing target is not owned by stow"
+#   File exists but isn't a symlink - use --adopt or delete it first
+
+# "cannot stow over directory"
+#   Directory exists with real files - move/delete or use --adopt
+
+# Check what's symlinked
+ls -la ~/.config/<app>
+readlink ~/.config/<app>

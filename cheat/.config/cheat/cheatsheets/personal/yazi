@@ -1,0 +1,87 @@
+---
+tags: [ files, tui, filemanager ]
+---
+# CLI options
+yazi <path>                         Open at path
+yazi --cwd-file <file>              Write cwd on exit (for shell integration)
+yazi --chooser-file <file>          Write selected files on open
+yazi --clear-cache                  Clear cache directory
+yazi --debug                        Print debug info
+
+# Shell wrapper (cd on exit)
+function y() {
+  local tmp="$(mktemp)"
+  yazi "$@" --cwd-file="$tmp"
+  if [ -f "$tmp" ]; then cd -- "$(cat "$tmp")"; rm "$tmp"; fi
+}
+
+# Navigation
+h/l             Parent / enter directory
+j/k             Move down/up
+J/K             Move down/up 5 lines
+gg / G          Top / bottom
+<C-u>/<C-d>     Half page up/down
+
+# Go to
+g + h           ~ (home)
+g + c           ~/.config
+g + d           ~/Downloads
+g + /           / (root)
+g + n           /nfs (custom)
+g + t           Trash
+
+# Selection
+Space           Toggle selection
+v               Visual mode
+V               Visual unset mode
+<C-a>           Select all
+<C-r>           Inverse selection
+Esc             Cancel selection
+
+# File operations
+o / Enter       Open file
+O               Open interactively (choose app)
+y               Yank (copy)
+x               Yank (cut)
+p               Paste
+P               Paste (overwrite)
+d               Trash
+D               Permanently delete
+a               Create file/dir (end with / for dir)
+r               Rename
+;               Run shell command
+:               Run shell command (block)
+
+# Tabs
+t               New tab
+1-9             Switch to tab n
+[/]             Previous/next tab
+<C-c>           Close tab
+
+# Search/filter
+/               Search
+?               Search backwards
+n/N             Next/prev match
+f               Filter
+s               Search files (fd)
+S               Search content (rg)
+
+# Sort
+, + m           Modified time
+, + M           Modified time (reverse)
+, + c           Created time
+, + s           Size
+, + a           Alphabetical
+, + n           Natural sort
+
+# View
+.               Toggle hidden files
+z + h           Toggle hidden
+z + p           Toggle preview
+<C-h>           Toggle hidden
+w               Task manager
+~               Help
+
+# Misc
+<C-s>           Shell (exit to return)
+<C-z>           Suspend yazi

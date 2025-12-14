@@ -1,0 +1,62 @@
+---
+tags: [ wm, wayland, hyprland ]
+---
+# hyprctl - query info
+hyprctl monitors                    List monitors
+hyprctl clients                     List all windows
+hyprctl activewindow                Show focused window info
+hyprctl workspaces                  List workspaces
+hyprctl devices                     List input devices
+hyprctl layers                      List layers
+hyprctl version                     Show version
+hyprctl -j <cmd>                    JSON output
+
+# hyprctl - dispatchers
+hyprctl dispatch exec <cmd>              Run command
+hyprctl dispatch killactive              Close focused window
+hyprctl dispatch workspace <n>           Switch to workspace
+hyprctl dispatch movetoworkspace <n>     Move window to workspace
+hyprctl dispatch togglefloating          Toggle floating
+hyprctl dispatch fullscreen <0|1|2>      Toggle fullscreen (0=full, 1=max, 2=fake)
+hyprctl dispatch focuswindow <selector>  Focus window by class/title/pid
+hyprctl dispatch movewindow <dir>        Move window (l/r/u/d)
+
+# hyprctl - live config changes
+hyprctl keyword general:gaps_out 20
+hyprctl keyword general:border_size 3
+hyprctl keyword decoration:rounding 10
+hyprctl reload                           Reload config
+
+# hyprctl - batch commands
+hyprctl --batch "dispatch workspace 1; dispatch exec ghostty"
+
+# Window selectors (for focuswindow, etc)
+class:<regex>        Match window class
+title:<regex>        Match window title
+pid:<pid>            Match process ID
+address:<addr>       Match window address
+
+# Window rules syntax (in config)
+windowrule = <rule>,<selector>
+windowrule = float,class:^(pavucontrol)$
+windowrule = size 80% 80%,title:^(btop)$
+windowrule = workspace 2,class:^(firefox)$
+
+# Common rules
+float               Make floating
+tile                Make tiled
+fullscreen          Make fullscreen
+size <W> <H>        Set size (px or %)
+center              Center window
+workspace <n>       Assign to workspace
+opacity <f> <f>     Active/inactive opacity
+noblur              Disable blur
+pin                 Pin (show on all workspaces)
+
+# Bind syntax (in config)
+bind = MODS, key, dispatcher, args
+bind = SUPER, Return, exec, ghostty
+bind = SUPER SHIFT, Q, killactive
+bindm = SUPER, mouse:272, movewindow     # mouse bind
+binde = SUPER, Right, resizeactive, 50 0  # repeat on hold
+bindl = , XF86AudioMute, exec, ...        # works when locked
