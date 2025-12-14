@@ -60,7 +60,7 @@ cheatpaths:
   #   'tags': tags that should be automatically applied to sheets on this path
   #   'readonly': shall user-created ('cheat -e') cheatsheets be saved here?
   - name: community
-    path: /home/cwar/.config/cheat/cheatsheets/community
+    path: /home/cwar/.local/share/cheat/community
     tags: [ community ]
     readonly: true
 
