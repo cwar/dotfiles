@@ -2,3 +2,8 @@
 on = ["g", "n"]
 run = "cd /nfs"
 desc = "Go to NFS shares"
+
+[[mgr.prepend_keymap]]
+on = ["F", "e"]
+run = 'shell --orphan -- ~/.local/bin/fix-epub-mimetype .'
+desc = "Fix epub mimetypes in current dir"

@@ -1,0 +1,5 @@
+#!/bin/bash
+echo "Running in: $PWD"
+fix-epub-mimetype .
+echo "Done! Press enter to continue"
+read

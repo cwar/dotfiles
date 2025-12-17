@@ -6,6 +6,8 @@ prepend_preloaders = [
 prepend_previewers = [
     { name = "*.m4b", run = "mediainfo" },
     { mime = "{audio,video,image}/*", run = "mediainfo" },
+    { name = "*.epub", run = "epub-preview" },
+    { mime = "application/epub+zip", run = "epub-preview" },
 ]
 
 [opener]
@@ -21,6 +23,12 @@ video = [
 image = [
     { run = 'xdg-open "$@"', orphan = true, desc = "View image" }
 ]
+epub = [
+    { run = 'foliate "$@"', orphan = true, desc = "Read in Foliate" }
+]
+pdf = [
+    { run = 'zathura "$@"', orphan = true, desc = "Read in Zathura" }
+]
 fallback = [
     { run = 'xdg-open "$@"', orphan = true, desc = "Open with default app" }
 ]
@@ -35,4 +43,7 @@ append_rules = [
     { name = "*.m4a", use = "audio" },
     { mime = "video/*", use = "video" },
     { mime = "image/*", use = "image" },
+    { name = "*.epub", use = "epub" },
+    { mime = "application/epub+zip", use = "epub" },
+    { mime = "application/pdf", use = "pdf" },
 ]

@@ -1,0 +1,84 @@
+#!/bin/bash
+# Fix epub files that have incorrect mimetype detection
+# Requires: calibre (ebook-convert)
+
+set -e
+
+usage() {
+    echo "Usage: fix-epub-mimetype <file.epub|directory> [--dry-run]"
+    echo "Fixes epub files so they're properly detected as application/epub+zip"
+    exit 1
+}
+
+if [[ $# -lt 1 ]]; then
+    usage
+fi
+
+DRY_RUN=false
+TARGET="$1"
+
+if [[ "$2" == "--dry-run" ]]; then
+    DRY_RUN=true
+fi
+
+if ! command -v ebook-convert &>/dev/null; then
+    echo "Error: ebook-convert not found. Install calibre first."
+    exit 1
+fi
+
+fix_epub() {
+    local epub="$1"
+    local mime
+    mime=$(file --mime-type -b "$epub")
+
+    if [[ "$mime" == "application/epub+zip" ]]; then
+        echo "OK: $(basename "$epub")"
+        return 0
+    fi
+
+    echo "FIX: $(basename "$epub") (detected as $mime)"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        return 0
+    fi
+
+    local tmpfile
+    tmpfile=$(mktemp --suffix=.epub)
+
+    if ebook-convert "$epub" "$tmpfile" --no-default-epub-cover 2>/dev/null; then
+        mv "$tmpfile" "$epub"
+        echo "     Fixed!"
+    else
+        rm -f "$tmpfile"
+        echo "     Failed to convert"
+        return 1
+    fi
+}
+
+FIXED=0
+SKIPPED=0
+
+if [[ -f "$TARGET" ]]; then
+    if fix_epub "$TARGET"; then
+        ((FIXED++)) || true
+    fi
+elif [[ -d "$TARGET" ]]; then
+    while read -r epub; do
+        mime=$(file --mime-type -b "$epub")
+        if [[ "$mime" != "application/epub+zip" ]]; then
+            if fix_epub "$epub"; then
+                ((FIXED++)) || true
+            fi
+        else
+            ((SKIPPED++)) || true
+        fi
+    done < <(find "$TARGET" -name "*.epub" -type f)
+else
+    echo "Error: $TARGET is not a file or directory"
+    exit 1
+fi
+
+# Send notification if notify-send is available
+if command -v notify-send &>/dev/null && [[ "$DRY_RUN" == false ]]; then
+    notify-send "EPUBs Fixed" "Fixed: $FIXED, Already OK: $SKIPPED"
+fi
