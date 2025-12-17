@@ -62,25 +62,25 @@ command = tmux
 # Force close without confirmation
 keybind = super+w=close_surface
 
-# Tokyo Night theme
-background = #1a1b26
-foreground = #c0caf5
-selection-background = #33467c
-selection-foreground = #c0caf5
-cursor-color = #c0caf5
-palette = 0=#15161e
-palette = 1=#f7768e
-palette = 2=#9ece6a
-palette = 3=#e0af68
-palette = 4=#7aa2f7
-palette = 5=#bb9af7
-palette = 6=#7dcfff
-palette = 7=#a9b1d6
-palette = 8=#414868
-palette = 9=#f7768e
-palette = 10=#9ece6a
-palette = 11=#e0af68
-palette = 12=#7aa2f7
-palette = 13=#bb9af7
-palette = 14=#7dcfff
-palette = 15=#c0caf5
+# Hackers (1995) theme - hack the planet
+background = #0a0e14
+foreground = #d4ffda
+selection-background = #1a2332
+selection-foreground = #39ff14
+cursor-color = #39ff14
+palette = 0=#0a0e14
+palette = 1=#ff2d95
+palette = 2=#39ff14
+palette = 3=#f0ff00
+palette = 4=#0088ff
+palette = 5=#bf5af2
+palette = 6=#00fff7
+palette = 7=#a8c0a8
+palette = 8=#2d3b4d
+palette = 9=#ff2d95
+palette = 10=#39ff14
+palette = 11=#f0ff00
+palette = 12=#0088ff
+palette = 13=#bf5af2
+palette = 14=#00fff7
+palette = 15=#d4ffda

@@ -1,40 +1,59 @@
 #!/bin/bash
-# Hackers-style screensaver using cmatrix
+# Hackers (1995) screensaver - pure CGI sequences
 # "Mess with the best, die like the rest"
-# Spawns on all monitors - exits all when any keypress detected
+# Plays on all monitors - any key/click exits ALL instances
+
+VIDEO="$HOME/.local/share/screensavers/hackers-screensaver.mp4"
+INPUT_CONF="$HOME/.local/share/screensavers/screensaver-input.conf"
 
 # Kill any existing instances
-pkill cmatrix 2>/dev/null
+pkill -f "mpv.*hackers-screensaver" 2>/dev/null
 sleep 0.1
+
+# Check if video exists
+if [[ ! -f "$VIDEO" ]]; then
+    echo "Error: Screensaver video not found at $VIDEO" >&2
+    exit 1
+fi
+
+# Cleanup function - kill ALL mpv screensaver instances
+cleanup() {
+    pkill -f "mpv.*hackers-screensaver" 2>/dev/null
+    exit 0
+}
+trap cleanup EXIT INT TERM
 
 # Get all monitor names
 monitors=$(hyprctl monitors -j | jq -r '.[].name')
 pids=()
 
-# Launch cmatrix on each monitor (window rules handle placement)
+# Launch mpv on each monitor
 for monitor in $monitors; do
-    ghostty \
-        --class="hackers-screensaver-instance" \
-        --title="cmatrix-$monitor" \
-        --command="cmatrix -b -C green -s -u 2" \
+    mpv "$VIDEO" \
+        --loop-file=inf \
+        --no-audio \
         --fullscreen \
-        --gtk-single-instance=false \
-        --quit-after-last-window-closed=true \
-        --window-decoration=false \
-        --background="#000000" \
-        --foreground="#00ff00" &
+        --no-border \
+        --no-osc \
+        --no-osd-bar \
+        --cursor-autohide=100 \
+        --hwdec=auto \
+        --panscan=1.0 \
+        --title="hackers-screensaver-$monitor" \
+        --wayland-app-id="hackers-screensaver" \
+        --input-conf="$INPUT_CONF" \
+        --really-quiet &
     pids+=($!)
     sleep 0.3
 done
 
-# Wait for ANY process to exit, then kill all others
+# Wait for ANY mpv to exit, then kill all others
 while true; do
     for pid in "${pids[@]}"; do
         if ! kill -0 "$pid" 2>/dev/null; then
-            # One exited, kill all cmatrix instances
-            pkill cmatrix 2>/dev/null
-            exit 0
+            # One mpv exited, kill them all
+            cleanup
         fi
     done
-    sleep 0.2
+    sleep 0.1
 done
