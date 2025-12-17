@@ -121,3 +121,5 @@ alias lg='lazygit'
 
 # starship prompt
 eval "$(starship init zsh)"
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
