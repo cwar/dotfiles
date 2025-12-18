@@ -4,25 +4,25 @@
 }
 
 window#waybar {
-  background: rgba(10, 14, 20, 0.9);
-  color: #d4ffda;
+  background: rgba(26, 27, 35, 0.95);
+  color: #f8f8f2;
 }
 
 #workspaces button {
   padding: 0 8px;
-  color: #5c7a65;
+  color: #6272a4;
   background: transparent;
   border: none;
 }
 
 #workspaces button.active {
-  color: #39ff14;
-  background: #1a2332;
+  color: #f8f8f2;
+  background: #44475a;
   border-radius: 4px;
 }
 
 #workspaces button:hover {
-  background: #12171f;
+  background: #44475a;
   border-radius: 4px;
 }
 
@@ -31,17 +31,17 @@ window#waybar {
 }
 
 #battery.charging {
-  color: #39ff14;
+  color: #50fa7b;
 }
 
 #battery.warning:not(.charging) {
-  color: #ffaa00;
+  color: #f1fa8c;
 }
 
 #battery.critical:not(.charging) {
-  color: #ff2d95;
+  color: #ff5555;
 }
 
 #network.disconnected {
-  color: #ff2d95;
+  color: #ff5555;
 }
