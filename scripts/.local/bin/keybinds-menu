@@ -56,6 +56,7 @@ declare -A bindings=(
     ["Super + V: Paste (universal)"]=""
     ["Super + X: Cut (universal)"]=""
     ["Super + Shift + V: Clipboard history"]="~/.local/bin/cliphist-rofi"
+    ["Super + Alt + T: Theme switcher"]="~/.local/bin/theme-rofi"
 
     # Screenshots - to clipboard
     ["Print: Screenshot area to clipboard"]="grim -g \"\$(slurp)\" - | wl-copy"

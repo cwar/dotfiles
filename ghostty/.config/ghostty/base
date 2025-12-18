@@ -1,0 +1,17 @@
+# Ghostty base config (non-theme settings)
+# Theme colors are appended by theme-switch from current/ghostty
+
+keybind = shift+enter=text:\x1b\r
+
+# Copy/paste with Ctrl+Insert / Shift+Insert (using system clipboard)
+keybind = ctrl+insert=copy_to_clipboard
+keybind = shift+insert=paste_from_clipboard
+
+confirm-close-surface = false
+quit-after-last-window-closed = true
+
+# Start in tmux (new session per window)
+command = tmux
+
+# Force close without confirmation
+keybind = super+w=close_surface
