@@ -3,6 +3,7 @@
 # Browse by workspace first, then by session within that workspace
 
 PROJECTS_DIR="$HOME/.claude/projects"
+declare -A CUSTOM_TITLES  # Cache for custom session titles
 
 if [[ ! -d "$PROJECTS_DIR" ]]; then
     notify-send "Claude Sessions" "No sessions found"
@@ -10,21 +11,16 @@ if [[ ! -d "$PROJECTS_DIR" ]]; then
 fi
 
 # Helper function to extract session summary
-# Priority: 1) custom-title, 2) summary line, 3) first user message
+# Priority: 1) custom-title (from cache), 2) summary line, 3) first user message
 get_session_summary() {
     local file="$1"
     local session_id="$2"
-    local project_dir="$3"
     local summary
 
-    # 1. Check for custom-title (user-renamed session)
-    if [[ -n "$session_id" && -n "$project_dir" ]]; then
-        summary=$(grep -h '"type"[[:space:]]*:[[:space:]]*"custom-title"' "$project_dir"/*.jsonl 2>/dev/null | \
-            jq -r --arg sid "$session_id" 'select(.sessionId == $sid) | .customTitle // ""' 2>/dev/null | head -1)
-        if [[ -n "$summary" && "$summary" != "null" ]]; then
-            echo "$summary"
-            return
-        fi
+    # 1. Check for custom-title from pre-built cache (set by caller)
+    if [[ -n "$session_id" && -n "${CUSTOM_TITLES[$session_id]:-}" ]]; then
+        echo "${CUSTOM_TITLES[$session_id]}"
+        return
     fi
 
     # 2. Try to find a dedicated summary line
@@ -71,6 +67,26 @@ get_session_summary() {
     echo ""
 }
 
+# Build custom title cache for a project directory (call once per workspace)
+build_custom_title_cache() {
+    local project_dir="$1"
+    CUSTOM_TITLES=()
+
+    local titles_json
+    titles_json=$(grep -h '"type"[[:space:]]*:[[:space:]]*"custom-title"' "$project_dir"/*.jsonl 2>/dev/null || true)
+
+    if [[ -n "$titles_json" ]]; then
+        while IFS= read -r line; do
+            local sid title
+            sid=$(echo "$line" | jq -r '.sessionId // ""' 2>/dev/null)
+            title=$(echo "$line" | jq -r '.customTitle // ""' 2>/dev/null)
+            if [[ -n "$sid" && -n "$title" && "$title" != "null" ]]; then
+                CUSTOM_TITLES["$sid"]="$title"
+            fi
+        done <<< "$titles_json"
+    fi
+}
+
 # Helper function to count actual conversation messages
 count_messages() {
     local file="$1"
@@ -106,7 +122,7 @@ for project_dir in "$PROJECTS_DIR"/*/; do
         done
     fi
 
-    # Count valid sessions
+    # Count valid sessions (fast: just check for messages, skip summary extraction)
     count=0
     latest_mtime=0
     for file in "$project_dir"/*.jsonl; do
@@ -116,12 +132,8 @@ for project_dir in "$PROJECTS_DIR"/*/; do
         session_id=$(basename "$file" .jsonl)
         [[ "$session_id" == agent-* ]] && continue
 
-        summary=$(get_session_summary "$file" "$session_id" "$project_dir")
-        [[ -z "$summary" ]] && continue
-
-        # Skip sessions with no messages
-        msg_count=$(count_messages "$file")
-        [[ "$msg_count" -eq 0 ]] && continue
+        # Quick check: has at least one user/assistant message?
+        grep -q '"type"[[:space:]]*:[[:space:]]*"\(user\|assistant\)"' "$file" 2>/dev/null || continue
 
         ((count++)) || true
         mtime=$(stat -c %Y "$file" 2>/dev/null || echo "0")
@@ -143,12 +155,13 @@ fi
 sorted_ws=$(echo -n "$workspace_list" | sort -t'|' -k1 -rn)
 ws_display=$(echo "$sorted_ws" | cut -d'|' -f2)
 
-selected_ws=$(echo "$ws_display" | rofi -dmenu -i -p "Select Workspace" -theme-str 'window {width: 50%;}')
+# Use -format i to get line number (0-based), not text
+selected_ws_idx=$(echo "$ws_display" | rofi -dmenu -i -p "Select Workspace" -format i -theme-str 'window {width: 50%;}')
 
-[[ -z "$selected_ws" ]] && exit 0
+[[ -z "$selected_ws_idx" ]] && exit 0
 
-# Find the matching project path (exact field match)
-project_path=$(echo "$sorted_ws" | awk -F'|' -v sel="$selected_ws" '$2 == sel {print $3; exit}')
+# Get project path by line number
+project_path=$(echo "$sorted_ws" | sed -n "$((selected_ws_idx + 1))p" | cut -d'|' -f3)
 project_dir="$PROJECTS_DIR/${project_path//\//-}"
 
 # Helper function for relative time
@@ -170,6 +183,7 @@ time_ago() {
 # Get sessions for selected workspace
 session_list=""
 now=$(date +%s)
+build_custom_title_cache "$project_dir"  # Rebuild cache for this workspace
 for file in "$project_dir"/*.jsonl; do
     [[ ! -f "$file" ]] && continue
     [[ $(stat -c %s "$file") -eq 0 ]] && continue
@@ -177,8 +191,11 @@ for file in "$project_dir"/*.jsonl; do
     session_id=$(basename "$file" .jsonl)
     [[ "$session_id" == agent-* ]] && continue
 
-    summary=$(get_session_summary "$file" "$session_id" "$project_dir")
+    summary=$(get_session_summary "$file" "$session_id")
     [[ -z "$summary" ]] && continue
+
+    # Sanitize pipe chars to avoid delimiter collision
+    summary="${summary//|/-}"
 
     # Count actual user/assistant messages - skip empty sessions
     msg_count=$(count_messages "$file")
@@ -200,12 +217,24 @@ fi
 sorted_sessions=$(echo -n "$session_list" | sort -t'|' -k1 -rn)
 session_display=$(echo "$sorted_sessions" | cut -d'|' -f2)
 
-selected_session=$(echo "$session_display" | rofi -dmenu -i -p "Select Session" -theme-str 'window {width: 60%;}')
+# Use -format i to get line number (0-based), not text - avoids matching bugs
+selected_idx=$(echo "$session_display" | rofi -dmenu -i -p "Select Session" -format i -theme-str 'window {width: 60%;}')
 
-[[ -z "$selected_session" ]] && exit 0
+[[ -z "$selected_idx" ]] && exit 0
 
-# Find matching session ID (exact field match)
-session_id=$(echo "$sorted_sessions" | awk -F'|' -v sel="$selected_session" '$2 == sel {print $3; exit}')
+# Get session ID by line number (add 1 since sed uses 1-based indexing)
+session_id=$(echo "$sorted_sessions" | sed -n "$((selected_idx + 1))p" | cut -d'|' -f3)
+
+# DEBUG: Show what was selected
+notify-send "DEBUG" "idx=$selected_idx, session_id=$session_id"
+echo "=== DEBUG ===" >> /tmp/claude-sessions-debug.log
+echo "selected_idx: $selected_idx" >> /tmp/claude-sessions-debug.log
+echo "sorted_sessions (first 10):" >> /tmp/claude-sessions-debug.log
+echo "$sorted_sessions" | head -10 >> /tmp/claude-sessions-debug.log
+echo "selected line: $(echo "$sorted_sessions" | sed -n "$((selected_idx + 1))p")" >> /tmp/claude-sessions-debug.log
+echo "session_id: $session_id" >> /tmp/claude-sessions-debug.log
+echo "project_path: $project_path" >> /tmp/claude-sessions-debug.log
+echo "==============" >> /tmp/claude-sessions-debug.log
 
 if [[ -z "$session_id" ]]; then
     notify-send "Claude Sessions" "Could not find session"
