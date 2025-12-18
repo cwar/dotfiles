@@ -1,6 +1,13 @@
 # Ghostty base config (non-theme settings)
 # Theme colors are appended by theme-switch from current/ghostty
 
+# Fully opaque background (no blur/transparency)
+background-opacity = 1
+
+# Force dark window decorations
+window-theme = ghostty
+gtk-titlebar = false
+
 keybind = shift+enter=text:\x1b\r
 
 # Copy/paste with Ctrl+Insert / Shift+Insert (using system clipboard)
