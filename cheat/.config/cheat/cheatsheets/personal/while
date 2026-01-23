@@ -1,0 +1,52 @@
+---
+tags: [ bash, loops, scripting ]
+---
+# Infinite Loops
+while :; do clear; command; sleep 1; done      # Using : (colon)
+while true; do clear; command; sleep 1; done   # Using true
+
+# Watch something continuously
+while :; do clear; kubectl get pods; sleep 5; done
+
+# Counter Loops
+i=0; while [ $i -lt 10 ]; do echo $i; ((i++)); done       # Count up
+i=10; while [ $i -gt 0 ]; do echo $i; ((i--)); done       # Count down
+
+# Reading Files
+while read -r line; do echo "$line"; done < file.txt
+
+# Parse with IFS
+while IFS=: read -r user _ uid gid _ home shell; do
+    echo "$user uses $shell"
+done < /etc/passwd
+
+# Reading Command Output
+while read -r file; do echo "$file"; done < <(ls)    # Process substitution
+
+# Wait for Conditions
+while [ ! -f /tmp/ready ]; do sleep 1; done          # Wait for file
+while ! curl -s localhost:8080 > /dev/null; do       # Wait for service
+    sleep 2
+done
+while pgrep -x "proc" > /dev/null; do sleep 1; done  # Wait for proc to end
+
+# Break and Continue
+while :; do
+    read -p "Enter (q to quit): " input
+    [ "$input" = "q" ] && break
+    echo "You said: $input"
+done
+
+# Retry with Backoff
+attempt=1
+while [ $attempt -le 5 ]; do
+    some_command && break
+    echo "Attempt $attempt failed..."
+    sleep $((attempt * 2))
+    ((attempt++))
+done
+
+# One-liners
+while :; do clear; date; sleep 1; done               # Clock
+while ! command; do sleep 1; done                    # Retry until success
+i=10; while [ $i -gt 0 ]; do echo $i; ((i--)); sleep 1; done   # Countdown
