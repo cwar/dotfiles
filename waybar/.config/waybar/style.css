@@ -26,8 +26,16 @@ window#waybar {
   border-radius: 4px;
 }
 
-#clock, #battery, #wireplumber, #tray, #network {
+#clock, #battery, #wireplumber, #tray, #network, #disk {
   padding: 0 6px;
+}
+
+#disk.warning {
+  color: #f1fa8c;
+}
+
+#disk.critical {
+  color: #ff5555;
 }
 
 #battery.charging {

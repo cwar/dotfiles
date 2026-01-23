@@ -6,7 +6,7 @@
 
   "modules-left": ["hyprland/workspaces"],
   "modules-center": ["clock"],
-  "modules-right": ["network", "wireplumber", "battery", "tray"],
+  "modules-right": ["disk", "disk#extra", "network", "wireplumber", "battery", "tray"],
 
   "hyprland/workspaces": {
     "format": "{id}"
@@ -17,8 +17,30 @@
   },
 
   "battery": {
-    "format": "🔋 {capacity}%",
+    "format": "{capacity}%",
     "format-charging": "⚡ {capacity}%"
+  },
+
+  "disk": {
+    "path": "/",
+    "format": "󰋊 / {percentage_used}%",
+    "tooltip-format": "Root: {used} / {total}",
+    "interval": 30,
+    "states": {
+      "warning": 75,
+      "critical": 90
+    }
+  },
+
+  "disk#extra": {
+    "path": "/mnt/extradrive1",
+    "format": "󰋊 ex {percentage_used}%",
+    "tooltip-format": "Extra: {used} / {total}",
+    "interval": 30,
+    "states": {
+      "warning": 75,
+      "critical": 90
+    }
   },
 
   "wireplumber": {
