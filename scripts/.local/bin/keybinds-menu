@@ -81,6 +81,11 @@ declare -A bindings=(
     ["Super + Ctrl + ,: Toggle do-not-disturb"]="makoctl mode -t do-not-disturb"
     ["Super + Alt + ,: Click last notification"]="makoctl invoke"
 
+    # Power Profiles
+    ["Power: Battery (quiet)"]="system76-power profile battery && notify-send 'Power Profile' 'Battery mode'"
+    ["Power: Balanced"]="system76-power profile balanced && notify-send 'Power Profile' 'Balanced mode'"
+    ["Power: Performance"]="system76-power profile performance && notify-send 'Power Profile' 'Performance mode'"
+
     # System
     ["Super + L: Lock screen"]="hyprlock"
     ["Super + Escape: Hackers screensaver"]="~/.local/bin/hackers-screensaver"
@@ -97,7 +102,7 @@ for key in "${!bindings[@]}"; do
 done
 
 # Sort and display
-selected=$(echo -e "$menu" | sort | rofi -dmenu -i -p "Keybindings" -theme-str 'window {width: 50%;} listview {lines: 20;}')
+selected=$(echo -e "$menu" | sort | rofi -dmenu -i -p "Keybindings" -theme-str 'window {width: 50%; height: 70%;} listview {lines: 15; scrollbar: true;}')
 
 if [ -n "$selected" ]; then
     cmd="${bindings[$selected]}"
