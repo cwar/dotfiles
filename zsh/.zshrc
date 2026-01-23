@@ -123,3 +123,37 @@ alias lg='lazygit'
 eval "$(starship init zsh)"
 fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
+
+# Claude wrapper - sets tmux window name while claude runs
+claude() {
+  if [[ -n "$TMUX" ]]; then
+    local original_name=$(tmux display-message -p '#W')
+    local session_label="claude"
+
+    # Check for resume flags to add context
+    local args=("$@")
+    for ((i=1; i<=${#args[@]}; i++)); do
+      case "${args[$i]}" in
+        -c|--continue) session_label="claude+" ;;
+        -r|--resume)
+          if [[ -n "${args[$((i+1))]}" && "${args[$((i+1))]}" != -* ]]; then
+            session_label="cc:${args[$((i+1))]:0:12}"
+          else
+            session_label="claude+"
+          fi ;;
+      esac
+    done
+
+    tmux rename-window "$session_label"
+    tmux set-window-option automatic-rename off
+
+    command claude "$@"
+    local exit_code=$?
+
+    tmux rename-window "$original_name"
+    tmux set-window-option automatic-rename on
+    return $exit_code
+  else
+    command claude "$@"
+  fi
+}
