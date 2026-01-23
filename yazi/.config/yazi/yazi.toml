@@ -1,3 +1,8 @@
+[tasks]
+micro_workers = 5      # Max concurrent micro tasks (default 10)
+macro_workers = 10     # Max concurrent macro tasks (default 25)
+bizarre_retry = 3      # Retry failed tasks (default 5)
+
 [plugin]
 prepend_preloaders = [
     { name = "*.m4b", run = "mediainfo" },

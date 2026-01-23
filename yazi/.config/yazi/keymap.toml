@@ -7,3 +7,14 @@ desc = "Go to NFS shares"
 on = ["F", "e"]
 run = 'shell --orphan -- ~/.local/bin/fix-epub-mimetype .'
 desc = "Fix epub mimetypes in current dir"
+
+# Disable preview seek to prevent ffprobe spam
+[[preview.prepend_keymap]]
+on = ["J"]
+run = "noop"
+desc = "Disabled - causes ffprobe spam"
+
+[[preview.prepend_keymap]]
+on = ["K"]
+run = "noop"
+desc = "Disabled - causes ffprobe spam"
