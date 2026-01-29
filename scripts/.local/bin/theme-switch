@@ -1,0 +1,93 @@
+#!/bin/bash
+# Theme switcher for hypr-concierge
+# Manages themes in ~/.config/hyprland-themes/
+
+THEMES_DIR="$HOME/.config/hyprland-themes/saved"
+CURRENT_DIR="$HOME/.config/hyprland-themes/current"
+DOTFILES="$HOME/dotfiles"
+
+if [[ -z "$1" ]]; then
+    echo "Available themes:"
+    ls "$THEMES_DIR"
+    echo ""
+    echo "Current: $(cat ~/.config/hyprland-themes/active-theme.txt 2>/dev/null || echo 'none')"
+    echo ""
+    echo "Usage: theme-switch <theme-name>"
+    exit 0
+fi
+
+THEME="$1"
+THEME_DIR="$THEMES_DIR/$THEME"
+
+if [[ ! -d "$THEME_DIR" ]]; then
+    echo "Theme not found: $THEME"
+    echo "Available: $(ls $THEMES_DIR | tr '\n' ' ')"
+    exit 1
+fi
+
+echo "Switching to: $THEME"
+
+# Copy theme color files to current/
+[[ -f "$THEME_DIR/colors.conf" ]] && cp "$THEME_DIR/colors.conf" "$CURRENT_DIR/"
+[[ -f "$THEME_DIR/mako" ]] && cp "$THEME_DIR/mako" "$CURRENT_DIR/"
+[[ -f "$THEME_DIR/ghostty" ]] && cp "$THEME_DIR/ghostty" "$CURRENT_DIR/"
+[[ -f "$THEME_DIR/hyprpaper.conf" ]] && cp "$THEME_DIR/hyprpaper.conf" "$CURRENT_DIR/"
+
+# Generate ghostty config (base + theme colors)
+if [[ -f "$DOTFILES/ghostty/.config/ghostty/base" ]] && [[ -f "$CURRENT_DIR/ghostty" ]]; then
+    cat "$DOTFILES/ghostty/.config/ghostty/base" "$CURRENT_DIR/ghostty" > "$HOME/.config/ghostty/config"
+fi
+
+# Copy full config files (waybar, rofi, tmux, hyprlock)
+[[ -f "$THEME_DIR/waybar-style.css" ]] && cp "$THEME_DIR/waybar-style.css" "$HOME/.config/waybar/style.css"
+[[ -f "$THEME_DIR/rofi-theme.rasi" ]] && cp "$THEME_DIR/rofi-theme.rasi" "$HOME/.config/rofi/tokyo-night.rasi"
+[[ -f "$THEME_DIR/tmux.conf" ]] && cp "$THEME_DIR/tmux.conf" "$HOME/.tmux.conf"
+[[ -f "$THEME_DIR/hyprlock.conf" ]] && cp "$THEME_DIR/hyprlock.conf" "$HOME/.config/hypr/hyprlock.conf"
+
+# Copy wallpapers to Pictures
+for wp in "$THEME_DIR"/wallpaper-*.jpg "$THEME_DIR"/wallpaper-*.png; do
+    [[ -f "$wp" ]] && cp "$wp" ~/Pictures/
+done
+
+# Update active theme marker
+echo "$THEME" > ~/.config/hyprland-themes/active-theme.txt
+
+# Reload everything
+echo "Reloading..."
+hyprctl reload &>/dev/null
+
+# Apply wallpapers via hyprctl IPC (new method since Hyprland 0.45+)
+if [[ -f "$CURRENT_DIR/hyprpaper.conf" ]]; then
+    # Parse hyprpaper.conf and apply each wallpaper
+    while IFS= read -r line; do
+        # Match lines like: wallpaper = eDP-1,/path/to/image.jpg
+        # or: wallpaper = ,/path/to/image.jpg (all monitors)
+        if [[ "$line" =~ ^wallpaper[[:space:]]*=[[:space:]]*([^,]*),(.+)$ ]]; then
+            monitor="${BASH_REMATCH[1]}"
+            wallpaper="${BASH_REMATCH[2]}"
+            # Expand ~ in path
+            wallpaper="${wallpaper/#\~/$HOME}"
+            if [[ -f "$wallpaper" ]]; then
+                display_mon="${monitor:-all}"
+                echo "  Setting wallpaper: $display_mon -> $(basename "$wallpaper")"
+                hyprctl hyprpaper wallpaper "$monitor,$wallpaper" &>/dev/null
+            fi
+        fi
+    done < "$CURRENT_DIR/hyprpaper.conf"
+fi
+
+# Reload mako
+makoctl reload &>/dev/null
+
+# Signal waybar to reload styles
+killall -SIGUSR2 waybar &>/dev/null
+
+# Reload tmux (all sessions)
+tmux list-sessions -F '#{session_name}' 2>/dev/null | while read session; do
+    tmux source-file ~/.tmux.conf -t "$session" 2>/dev/null
+done
+
+sleep 0.2
+echo "Done! Switched to $THEME"
+echo ""
+echo "Note: Restart Ghostty (Ctrl+Shift+,) for terminal colors"
