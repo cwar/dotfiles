@@ -57,6 +57,9 @@ declare -A bindings=(
     ["Super + X: Cut (universal)"]=""
     ["Super + Shift + V: Clipboard history"]="~/.local/bin/cliphist-rofi"
     ["Super + Alt + T: Theme switcher"]="~/.local/bin/theme-rofi"
+    ["Super + Alt + I: Claude Insights"]="~/.local/bin/claude-insights rofi"
+    ["Super + Alt + S: Showcase (tweaks & projects)"]="~/.local/bin/showcase rofi"
+    ["Super + Alt + S: Showcase (tweaks & projects)"]="~/.local/bin/showcase rofi"
 
     # Screenshots - to clipboard
     ["Print: Screenshot area to clipboard"]="grim -g \"\$(slurp)\" - | wl-copy"
@@ -86,12 +89,16 @@ declare -A bindings=(
     ["Power: Balanced"]="system76-power profile balanced && notify-send 'Power Profile' 'Balanced mode'"
     ["Power: Performance"]="system76-power profile performance && notify-send 'Power Profile' 'Performance mode'"
 
+    # Pi (coding agent)
+    ["Ctrl + Shift + S (in pi): Toggle split output mode"]=""
+
     # System
     ["Super + L: Lock screen"]="hyprlock"
     ["Super + Escape: Hackers screensaver"]="~/.local/bin/hackers-screensaver"
     ["Super + M: Exit Hyprland"]="hyprctl dispatch exit"
     ["Super + K: Show this menu"]=""
     ["Super + Shift + G: Lazygit (uses terminal cwd)"]="~/.local/bin/launch-lazygit"
+    ["Super + Shift + I: Toggle monitor input (HDMI1/HDMI2)"]="~/.local/bin/samsung-input-toggle"
     ["Super + G: Keyboard mouse control"]="wl-kbptr"
 )
 
