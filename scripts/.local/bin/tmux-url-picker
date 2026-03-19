@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# tmux-url-picker: Parse URLs from visible tmux pane, pick with fzf, open or copy
+
+set -euo pipefail
+
+# Capture visible pane content + scrollback visible area
+CONTENT=$(tmux capture-pane -p -S -500 2>/dev/null || tmux capture-pane -p)
+
+# Extract URLs (http/https/ftp, git@, file://, bare domains)
+URLS=$(echo "$CONTENT" | grep -oP '(https?://|ftp://|file://)[^\s<>"'\''\)\]\}│┃|,;]+' | 
+       sed 's/[.)]*$//' |  # trim trailing periods/parens
+       awk '!seen[$0]++')  # deduplicate, preserve order
+
+if [ -z "$URLS" ]; then
+    tmux display-message "No URLs found on screen"
+    exit 0
+fi
+
+# Count URLs
+URL_COUNT=$(echo "$URLS" | wc -l)
+
+# Use fzf in tmux popup to pick URL(s) and action
+SELECTED=$(echo "$URLS" | fzf-tmux -p 90%,60% \
+    --multi \
+    --reverse \
+    --header="╸ $URL_COUNT URLs found ╺ enter=open │ ctrl-y=copy │ ctrl-a=copy all" \
+    --prompt="🔗 " \
+    --bind="ctrl-y:execute-silent(echo {} | wl-copy)+abort" \
+    --bind="ctrl-a:execute-silent(echo '$URLS' | wl-copy)+abort" \
+    --expect="enter,ctrl-y" \
+    --color="bg:#0a0e14,fg:#d4ffda,header:#39ff14,prompt:#39ff14,pointer:#39ff14,hl:#5c7a65,hl+:#39ff14,info:#5c7a65" \
+    2>/dev/null) || exit 0
+
+# Parse fzf output: first line is the key pressed, rest are selections
+KEY=$(echo "$SELECTED" | head -1)
+CHOSEN=$(echo "$SELECTED" | tail -n +2)
+
+[ -z "$CHOSEN" ] && exit 0
+
+if [ "$KEY" = "ctrl-y" ]; then
+    echo -n "$CHOSEN" | wl-copy
+    tmux display-message "📋 Copied to clipboard"
+else
+    # Open each selected URL
+    while IFS= read -r url; do
+        xdg-open "$url" &>/dev/null &
+    done <<< "$CHOSEN"
+    COUNT=$(echo "$CHOSEN" | wc -l)
+    if [ "$COUNT" -eq 1 ]; then
+        tmux display-message "🌐 Opened: $CHOSEN"
+    else
+        tmux display-message "🌐 Opened $COUNT URLs"
+    fi
+fi
