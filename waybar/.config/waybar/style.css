@@ -4,52 +4,44 @@
 }
 
 window#waybar {
-  background: rgba(26, 27, 35, 0.95);
-  color: #f8f8f2;
+  background: rgba(10, 14, 20, 0.9);
+  color: #d4ffda;
 }
 
 #workspaces button {
   padding: 0 8px;
-  color: #6272a4;
+  color: #5c7a65;
   background: transparent;
   border: none;
 }
 
 #workspaces button.active {
-  color: #f8f8f2;
-  background: #44475a;
+  color: #39ff14;
+  background: #1a2332;
   border-radius: 4px;
 }
 
 #workspaces button:hover {
-  background: #44475a;
+  background: #12171f;
   border-radius: 4px;
 }
 
-#clock, #battery, #wireplumber, #tray, #network, #disk {
+#clock, #battery, #wireplumber, #tray, #network {
   padding: 0 6px;
 }
 
-#disk.warning {
-  color: #f1fa8c;
-}
-
-#disk.critical {
-  color: #ff5555;
-}
-
 #battery.charging {
-  color: #50fa7b;
+  color: #39ff14;
 }
 
 #battery.warning:not(.charging) {
-  color: #f1fa8c;
+  color: #ffaa00;
 }
 
 #battery.critical:not(.charging) {
-  color: #ff5555;
+  color: #ff2d95;
 }
 
 #network.disconnected {
-  color: #ff5555;
+  color: #ff2d95;
 }

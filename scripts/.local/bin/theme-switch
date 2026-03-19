@@ -27,6 +27,9 @@ fi
 
 echo "Switching to: $THEME"
 
+# Clear stale files from current/ to prevent theme mixing
+rm -f "$CURRENT_DIR"/{colors.conf,mako,ghostty,hyprpaper.conf} 2>/dev/null
+
 # Copy theme color files to current/
 [[ -f "$THEME_DIR/colors.conf" ]] && cp "$THEME_DIR/colors.conf" "$CURRENT_DIR/"
 [[ -f "$THEME_DIR/mako" ]] && cp "$THEME_DIR/mako" "$CURRENT_DIR/"
@@ -41,6 +44,8 @@ fi
 # Copy full config files (waybar, rofi, tmux, hyprlock)
 [[ -f "$THEME_DIR/waybar-style.css" ]] && cp "$THEME_DIR/waybar-style.css" "$HOME/.config/waybar/style.css"
 [[ -f "$THEME_DIR/rofi-theme.rasi" ]] && cp "$THEME_DIR/rofi-theme.rasi" "$HOME/.config/rofi/tokyo-night.rasi"
+# Check both tmux.conf and .tmux.conf (themes use .tmux.conf)
+[[ -f "$THEME_DIR/.tmux.conf" ]] && cp "$THEME_DIR/.tmux.conf" "$HOME/.tmux.conf"
 [[ -f "$THEME_DIR/tmux.conf" ]] && cp "$THEME_DIR/tmux.conf" "$HOME/.tmux.conf"
 [[ -f "$THEME_DIR/hyprlock.conf" ]] && cp "$THEME_DIR/hyprlock.conf" "$HOME/.config/hypr/hyprlock.conf"
 
@@ -56,24 +61,12 @@ echo "$THEME" > ~/.config/hyprland-themes/active-theme.txt
 echo "Reloading..."
 hyprctl reload &>/dev/null
 
-# Apply wallpapers via hyprctl IPC (new method since Hyprland 0.45+)
+# Restart hyprpaper to pick up new config (symlinked to current/)
 if [[ -f "$CURRENT_DIR/hyprpaper.conf" ]]; then
-    # Parse hyprpaper.conf and apply each wallpaper
-    while IFS= read -r line; do
-        # Match lines like: wallpaper = eDP-1,/path/to/image.jpg
-        # or: wallpaper = ,/path/to/image.jpg (all monitors)
-        if [[ "$line" =~ ^wallpaper[[:space:]]*=[[:space:]]*([^,]*),(.+)$ ]]; then
-            monitor="${BASH_REMATCH[1]}"
-            wallpaper="${BASH_REMATCH[2]}"
-            # Expand ~ in path
-            wallpaper="${wallpaper/#\~/$HOME}"
-            if [[ -f "$wallpaper" ]]; then
-                display_mon="${monitor:-all}"
-                echo "  Setting wallpaper: $display_mon -> $(basename "$wallpaper")"
-                hyprctl hyprpaper wallpaper "$monitor,$wallpaper" &>/dev/null
-            fi
-        fi
-    done < "$CURRENT_DIR/hyprpaper.conf"
+    pkill -9 hyprpaper 2>/dev/null
+    sleep 0.3
+    nohup hyprpaper >/dev/null 2>&1 &
+    echo "  Wallpaper updated"
 fi
 
 # Reload mako
