@@ -125,6 +125,9 @@ fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
 
 # Claude wrapper - sets tmux window name while claude runs
+# Claude insights greeting (shows occasional insight on shell open)
+[[ -x "$HOME/.local/bin/claude-insights" ]] && claude-insights greeting
+
 claude() {
   if [[ -n "$TMUX" ]]; then
     local original_name=$(tmux display-message -p '#W')
