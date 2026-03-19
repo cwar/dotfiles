@@ -1,0 +1,313 @@
+#!/bin/bash
+# ╔══════════════════════════════════════════════════════════╗
+# ║  showcase - Personal tweaks & projects browser           ║
+# ║  Browse, preview, and act on your custom setup           ║
+# ╚══════════════════════════════════════════════════════════╝
+
+CATALOG="$HOME/.config/showcase/catalog.yaml"
+CACHE_DIR="$HOME/.cache/showcase"
+CACHE_FILE="$CACHE_DIR/entries.cache"
+
+# Category icons
+declare -A CATEGORY_ICONS=(
+    [script]="󰯂"
+    [tool]=""
+    [config]=""
+    [skill]="󱜙"
+    [tweak]=""
+    [project]=""
+)
+
+# Category colors for fzf header
+declare -A CATEGORY_COLORS=(
+    [script]="green"
+    [tool]="blue"
+    [config]="yellow"
+    [skill]="magenta"
+    [tweak]="cyan"
+    [project]="red"
+)
+
+# ── Parse catalog ──────────────────────────────────────────
+parse_catalog() {
+    mkdir -p "$CACHE_DIR"
+
+    # Check if cache is fresh
+    if [[ -f "$CACHE_FILE" && "$CACHE_FILE" -nt "$CATALOG" ]]; then
+        cat "$CACHE_FILE"
+        return
+    fi
+
+    # Parse YAML with a simple awk parser (no yq dependency)
+    awk '
+    /^  - name:/ {
+        gsub(/^  - name: "/, ""); gsub(/"$/, "");
+        name = $0; next
+    }
+    /^    category:/ {
+        gsub(/^    category: /, "");
+        category = $0; next
+    }
+    /^    description:/ {
+        gsub(/^    description: "/, ""); gsub(/"$/, "");
+        description = $0; next
+    }
+    /^    path:/ {
+        gsub(/^    path: "/, ""); gsub(/"$/, "");
+        path = $0; next
+    }
+    /^    tags:/ {
+        gsub(/^    tags: \[/, ""); gsub(/\]$/, "");
+        tags = $0; next
+    }
+    /^    action:/ {
+        gsub(/^    action: /, "");
+        action = $0;
+        # Output tab-separated: name, category, description, path, tags, action
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n", name, category, description, path, tags, action;
+        next
+    }
+    ' "$CATALOG" | tee "$CACHE_FILE"
+}
+
+# ── Format entry for display ──────────────────────────────
+format_entries() {
+    while IFS=$'\t' read -r name category description path tags action; do
+        icon="${CATEGORY_ICONS[$category]:-}"
+        printf "%s  %-28s │ %-8s │ %s\n" "$icon" "$name" "$category" "$description"
+    done
+}
+
+# ── Preview function ───────────────────────────────────────
+generate_preview() {
+    local selected="$1"
+    local name category description path tags action
+
+    # Find the matching entry
+    while IFS=$'\t' read -r n c d p t a; do
+        display_name=$(echo "$selected" | sed 's/^[^ ]* *//' | sed 's/ *│.*//' | xargs)
+        if [[ "$n" == "$display_name" ]]; then
+            name="$n"; category="$c"; description="$d"; path="$p"; tags="$t"; action="$a"
+            break
+        fi
+    done < <(parse_catalog)
+
+    [[ -z "$name" ]] && return
+
+    # Expand path
+    local expanded_path="${path/#\~/$HOME}"
+
+    echo -e "\033[1;32m╭──────────────────────────────────────────╮\033[0m"
+    echo -e "\033[1;32m│\033[0m \033[1;37m$name\033[0m"
+    echo -e "\033[1;32m╰──────────────────────────────────────────╯\033[0m"
+    echo ""
+    echo -e "\033[1;34m󰏫  Category:\033[0m  $category"
+    echo -e "\033[1;34m󰈙  Description:\033[0m  $description"
+    echo -e "\033[1;34m  Path:\033[0m  $path"
+    echo -e "\033[1;34m  Tags:\033[0m  $tags"
+    echo -e "\033[1;34m  Action:\033[0m  $action"
+    echo ""
+
+    # Show file preview
+    if [[ -f "$expanded_path" ]]; then
+        echo -e "\033[1;33m── Preview ──────────────────────────────\033[0m"
+        head -40 "$expanded_path" 2>/dev/null
+    elif [[ -d "$expanded_path" ]]; then
+        echo -e "\033[1;33m── Contents ─────────────────────────────\033[0m"
+        ls -la --color=always "$expanded_path" 2>/dev/null
+        # If there's a README, show it
+        if [[ -f "$expanded_path/README.md" ]]; then
+            echo ""
+            echo -e "\033[1;33m── README ───────────────────────────────\033[0m"
+            head -30 "$expanded_path/README.md" 2>/dev/null
+        elif [[ -f "$expanded_path/SKILL.md" ]]; then
+            echo ""
+            echo -e "\033[1;33m── SKILL.md ─────────────────────────────\033[0m"
+            head -30 "$expanded_path/SKILL.md" 2>/dev/null
+        fi
+    fi
+}
+
+# ── Action menu ────────────────────────────────────────────
+run_action() {
+    local selected="$1"
+    local name category description path tags action
+
+    while IFS=$'\t' read -r n c d p t a; do
+        display_name=$(echo "$selected" | sed 's/^[^ ]* *//' | sed 's/ *│.*//' | xargs)
+        if [[ "$n" == "$display_name" ]]; then
+            name="$n"; category="$c"; description="$d"; path="$p"; tags="$t"; action="$a"
+            break
+        fi
+    done < <(parse_catalog)
+
+    [[ -z "$name" ]] && return
+
+    local expanded_path="${path/#\~/$HOME}"
+
+    case "$action" in
+        edit)
+            if [[ -d "$expanded_path" ]]; then
+                ${EDITOR:-nvim} "$expanded_path"
+            else
+                ${EDITOR:-nvim} "$expanded_path"
+            fi
+            ;;
+        run)
+            if [[ -x "$expanded_path" ]]; then
+                "$expanded_path"
+            else
+                bash "$expanded_path"
+            fi
+            ;;
+        browse)
+            xdg-open "$expanded_path" 2>/dev/null
+            ;;
+        view)
+            ${PAGER:-less} "$expanded_path"
+            ;;
+    esac
+}
+
+# ── Rofi mode ──────────────────────────────────────────────
+rofi_mode() {
+    local entries=""
+    while IFS=$'\t' read -r name category description path tags action; do
+        icon="${CATEGORY_ICONS[$category]:-}"
+        entries+="$icon  $name  ·  $description\n"
+    done < <(parse_catalog)
+
+    selected=$(echo -e "$entries" | rofi -dmenu -i -p "Showcase" \
+        -theme-str 'window {width: 55%; height: 65%;} listview {lines: 14; scrollbar: true;}' \
+        -mesg "  Browse your custom tweaks, tools & projects")
+
+    if [[ -n "$selected" ]]; then
+        # Extract name from selection
+        local sel_name
+        sel_name=$(echo "$selected" | sed 's/^[^ ]* *//' | sed 's/  ·  .*//' | xargs)
+
+        # Find and execute action
+        while IFS=$'\t' read -r name category description path tags action; do
+            if [[ "$name" == "$sel_name" ]]; then
+                local expanded_path="${path/#\~/$HOME}"
+                case "$action" in
+                    edit)
+                        ghostty -e ${EDITOR:-nvim} "$expanded_path" &
+                        ;;
+                    run)
+                        if [[ -x "$expanded_path" ]]; then
+                            ghostty -e "$expanded_path" &
+                        else
+                            ghostty -e bash "$expanded_path" &
+                        fi
+                        ;;
+                    browse)
+                        xdg-open "$expanded_path" 2>/dev/null &
+                        ;;
+                    view)
+                        ghostty -e ${PAGER:-less} "$expanded_path" &
+                        ;;
+                esac
+                break
+            fi
+        done < <(parse_catalog)
+    fi
+}
+
+# ── TUI mode (fzf) ────────────────────────────────────────
+tui_mode() {
+    local filter="${1:-}"
+    local entries
+    entries=$(parse_catalog)
+
+    # Apply category filter if specified
+    if [[ -n "$filter" ]]; then
+        entries=$(echo "$entries" | awk -F'\t' -v f="$filter" 'tolower($2) == tolower(f)')
+    fi
+
+    local formatted
+    formatted=$(echo "$entries" | format_entries)
+
+    # Export functions for fzf preview subprocess
+    export CATALOG CACHE_DIR CACHE_FILE
+    export -f parse_catalog generate_preview
+    export -A CATEGORY_ICONS
+
+    local header
+    header="╔══════════════════════════════════════════════════════════════════════╗
+║  SHOWCASE                    enter: open │ ctrl-e: edit │ ctrl-r: run ║
+║  Your custom tweaks & tools  ctrl-a: add │ ctrl-d: catalog │ ?: help  ║
+╚══════════════════════════════════════════════════════════════════════╝
+ 󰯂 script   tool   config  󱜙 skill   tweak   project"
+
+    local selected
+    selected=$(echo "$formatted" | fzf \
+        --ansi \
+        --header="$header" \
+        --preview='bash -c "source ~/.local/bin/showcase; generate_preview {}"' \
+        --preview-window=right:50%:wrap \
+        --bind='ctrl-e:execute(bash -c "source ~/.local/bin/showcase; FORCE_ACTION=edit run_action {}")' \
+        --bind='ctrl-r:execute(bash -c "source ~/.local/bin/showcase; FORCE_ACTION=run run_action {}")' \
+        --bind='ctrl-a:execute(${EDITOR:-nvim} '"$CATALOG"')+reload(bash -c "source ~/.local/bin/showcase; rm -f '"$CACHE_FILE"'; parse_catalog | format_entries")' \
+        --bind='ctrl-d:execute(${EDITOR:-nvim} '"$CATALOG"')+reload(bash -c "source ~/.local/bin/showcase; rm -f '"$CACHE_FILE"'; parse_catalog | format_entries")' \
+        --color='header:green,pointer:green,marker:green,prompt:green,hl:yellow,hl+:yellow' \
+        --prompt='  ' \
+        --pointer='▶' \
+        --margin=1 \
+        --padding=1 \
+        --border=rounded \
+        --border-label=' showcase ' \
+        --border-label-pos=3)
+
+    if [[ -n "$selected" ]]; then
+        run_action "$selected"
+    fi
+}
+
+# ── CLI ────────────────────────────────────────────────────
+usage() {
+    echo "Usage: showcase [command] [options]"
+    echo ""
+    echo "Commands:"
+    echo "  (default)     Open TUI browser (fzf)"
+    echo "  rofi          Open rofi browser"
+    echo "  list          List all entries"
+    echo "  add           Open catalog in editor"
+    echo "  search <q>    Search entries"
+    echo "  filter <cat>  Filter by category"
+    echo ""
+    echo "Categories: script, tool, config, skill, tweak, project"
+}
+
+# Allow sourcing for fzf subshells
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    return 0
+fi
+
+case "${1:-}" in
+    rofi)
+        rofi_mode
+        ;;
+    list)
+        parse_catalog | format_entries
+        ;;
+    add)
+        ${EDITOR:-nvim} "$CATALOG"
+        rm -f "$CACHE_FILE"
+        ;;
+    search)
+        shift
+        query="$*"
+        parse_catalog | grep -i "$query" | format_entries
+        ;;
+    filter)
+        shift
+        tui_mode "$1"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        tui_mode
+        ;;
+esac

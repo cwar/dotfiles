@@ -1,0 +1,232 @@
+# Showcase - Personal tweaks, projects, and tools catalog
+# Categories: tweak, script, tool, config, skill, project
+# Actions: edit (open in $EDITOR), run (execute), browse (open URL), view (preview file)
+
+entries:
+  # ── Scripts & Tools ──────────────────────────────────────
+  - name: "Hackers Screensaver"
+    category: script
+    description: "Hackers (1995) inspired screensaver - pure CGI sequences across all monitors"
+    path: "~/.local/bin/hackers-screensaver"
+    tags: [fun, aesthetic, terminal]
+    action: run
+
+  - name: "Claude Sessions Picker"
+    category: tool
+    description: "Browse and resume Claude Code sessions by workspace"
+    path: "~/.local/bin/claude-sessions"
+    tags: [claude, productivity, rofi]
+    action: run
+
+  - name: "Claude Insights"
+    category: tool
+    description: "AI-powered insights viewer - terminal greeting, rofi mode, weekly digest"
+    path: "~/.local/bin/claude-insights"
+    tags: [claude, analytics, python]
+    action: edit
+
+  - name: "Clipboard History (rofi)"
+    category: script
+    description: "Rofi-powered clipboard history browser using cliphist"
+    path: "~/.local/bin/cliphist-rofi"
+    tags: [rofi, clipboard, wayland]
+    action: run
+
+  - name: "Theme Switcher"
+    category: tool
+    description: "Rofi theme switcher for Hyprland - integrates with hypr-concierge"
+    path: "~/.local/bin/theme-rofi"
+    tags: [theming, rofi, hyprland]
+    action: run
+
+  - name: "Samsung Input Toggle"
+    category: tool
+    description: "Toggle Samsung Odyssey G95SC between HDMI1/HDMI2 via WiFi API"
+    path: "~/.local/bin/samsung-input-toggle"
+    tags: [hardware, monitor, python]
+    action: edit
+
+  - name: "System Update"
+    category: script
+    description: "Universal system update - pacman, AUR, flatpak, all in one"
+    path: "~/.local/bin/sysupdate"
+    tags: [system, maintenance]
+    action: run
+
+  - name: "System Info"
+    category: script
+    description: "Clean system info display - CPU, memory, disk, uptime"
+    path: "~/.local/bin/sysinfo"
+    tags: [system, info]
+    action: run
+
+  - name: "Weather"
+    category: script
+    description: "Terminal weather display"
+    path: "~/.local/bin/weather"
+    tags: [info, terminal]
+    action: run
+
+  - name: "Launch or Focus"
+    category: script
+    description: "Smart window launcher - focuses existing window or launches new one"
+    path: "~/.local/bin/launch-or-focus"
+    tags: [hyprland, window-management]
+    action: edit
+
+  - name: "Lazygit Launcher"
+    category: script
+    description: "Launch lazygit using the focused terminal's working directory"
+    path: "~/.local/bin/launch-lazygit"
+    tags: [git, terminal]
+    action: edit
+
+  - name: "Keybindings Menu"
+    category: tool
+    description: "Rofi cheat sheet of all keybindings with optional execution"
+    path: "~/.local/bin/keybinds-menu"
+    tags: [rofi, keybindings, reference]
+    action: run
+
+  - name: "Fix EPUB Tool"
+    category: script
+    description: "Fix EPUB mimetype issues for e-reader compatibility"
+    path: "~/.local/bin/fix-epub-here"
+    tags: [ebooks, utility]
+    action: edit
+
+  # ── Configs & Dotfiles ──────────────────────────────────
+  - name: "Hyprland Config"
+    category: config
+    description: "Main Hyprland window manager configuration"
+    path: "~/dotfiles/hypr/.config/hypr/hyprland.conf"
+    tags: [hyprland, wm, rice]
+    action: edit
+
+  - name: "Ghostty Terminal"
+    category: config
+    description: "Ghostty terminal emulator configuration"
+    path: "~/dotfiles/ghostty"
+    tags: [terminal, ghostty]
+    action: edit
+
+  - name: "Neovim Config"
+    category: config
+    description: "Neovim editor configuration"
+    path: "~/dotfiles/nvim"
+    tags: [editor, neovim, lua]
+    action: edit
+
+  - name: "Waybar"
+    category: config
+    description: "Waybar status bar configuration and styling"
+    path: "~/dotfiles/waybar"
+    tags: [bar, waybar, rice]
+    action: edit
+
+  - name: "Rofi Theme"
+    category: config
+    description: "Custom rofi launcher theme (tokyo-night based)"
+    path: "~/dotfiles/rofi/.config/rofi/tokyo-night.rasi"
+    tags: [rofi, theming, rice]
+    action: edit
+
+  - name: "Starship Prompt"
+    category: config
+    description: "Starship cross-shell prompt configuration"
+    path: "~/dotfiles/starship"
+    tags: [shell, prompt, rice]
+    action: edit
+
+  - name: "Tmux Config"
+    category: config
+    description: "Tmux terminal multiplexer setup"
+    path: "~/dotfiles/tmux"
+    tags: [terminal, tmux]
+    action: edit
+
+  - name: "Yazi File Manager"
+    category: config
+    description: "Yazi terminal file manager configuration"
+    path: "~/dotfiles/yazi"
+    tags: [files, yazi, terminal]
+    action: edit
+
+  - name: "Zsh Config"
+    category: config
+    description: "Zsh shell configuration and plugins"
+    path: "~/dotfiles/zsh"
+    tags: [shell, zsh]
+    action: edit
+
+  - name: "Lazygit Config"
+    category: config
+    description: "Lazygit terminal git UI configuration"
+    path: "~/dotfiles/lazygit"
+    tags: [git, lazygit]
+    action: edit
+
+  # ── Skills & AI ──────────────────────────────────────────
+  - name: "Hypr Concierge"
+    category: skill
+    description: "AI theme concierge - mood-based theming for Hyprland desktop"
+    path: "~/.claude/skills/hypr-concierge"
+    tags: [claude, theming, ai]
+    action: edit
+
+  - name: "MCP Builder"
+    category: skill
+    description: "Guide for creating MCP (Model Context Protocol) servers"
+    path: "~/.claude/skills/mcp-builder-enhanced"
+    tags: [claude, mcp, ai]
+    action: edit
+
+  - name: "Discord Bot Builder"
+    category: skill
+    description: "Build Discord bots with modern best practices"
+    path: "~/.claude/skills/discord-bot-builder"
+    tags: [claude, discord, ai]
+    action: edit
+
+  - name: "Cwarprime Cluster"
+    category: skill
+    description: "Kubernetes cluster infrastructure knowledge base"
+    path: "~/.claude/skills/cwarprime"
+    tags: [claude, k8s, infrastructure]
+    action: edit
+
+  - name: "TTRPG Companion"
+    category: skill
+    description: "Space sci-fi TTRPG campaign companion AI"
+    path: "~/.claude/skills/ttrpg-companion"
+    tags: [claude, gaming, ttrpg]
+    action: edit
+
+  - name: "Global Todo"
+    category: skill
+    description: "Persistent todo list that survives across Claude sessions"
+    path: "~/.claude/skills/global-todo"
+    tags: [claude, productivity]
+    action: edit
+
+  # ── Tweaks ───────────────────────────────────────────────
+  - name: "Hyprlock"
+    category: tweak
+    description: "Custom lock screen configuration"
+    path: "~/dotfiles/hypr/.config/hypr/hyprlock.conf"
+    tags: [hyprland, lockscreen, rice]
+    action: edit
+
+  - name: "Hypridle"
+    category: tweak
+    description: "Idle behavior configuration - auto-lock, screen off"
+    path: "~/dotfiles/hypr/.config/hypr/hypridle.conf"
+    tags: [hyprland, idle, power]
+    action: edit
+
+  - name: "XDG Portal Config"
+    category: tweak
+    description: "XDG desktop portal and file chooser config"
+    path: "~/dotfiles/xdg-desktop-portal"
+    tags: [wayland, xdg, system]
+    action: edit

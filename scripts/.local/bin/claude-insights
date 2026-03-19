@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""
+Claude Insights viewer - used by terminal greeting, rofi, and weekly digest.
+
+Usage:
+  claude-insights greeting    # Show 1 random recent insight (for shell startup)
+  claude-insights rofi        # Browse all insights in rofi
+  claude-insights digest      # Weekly digest notification
+  claude-insights recent [N]  # Show N most recent insights in terminal
+"""
+
+import json
+import os
+import random
+import subprocess
+import sys
+from datetime import datetime, timedelta
+
+JOURNAL_PATH = os.path.expanduser("~/.claude/insights-journal.md")
+
+
+def parse_insights() -> list[dict]:
+    """Parse the journal into structured entries."""
+    if not os.path.exists(JOURNAL_PATH):
+        return []
+
+    entries = []
+    current = None
+
+    with open(JOURNAL_PATH, "r") as f:
+        for line in f:
+            line = line.rstrip("\n")
+
+            if line.startswith("### "):
+                if current and current["body"].strip():
+                    entries.append(current)
+                current = {
+                    "date": line[4:].strip(),
+                    "topic": "",
+                    "dir": "",
+                    "body": "",
+                }
+            elif current is not None:
+                if line.startswith("**Topic:**"):
+                    current["topic"] = line.replace("**Topic:**", "").strip()
+                elif line.startswith("**Dir:**"):
+                    current["dir"] = line.replace("**Dir:**", "").strip().strip("`")
+                elif line == "---":
+                    continue
+                else:
+                    current["body"] += line + "\n"
+
+        if current and current["body"].strip():
+            entries.append(current)
+
+    return entries
+
+
+def cmd_greeting():
+    """Show one random recent insight for shell startup. Quiet if no insights or shown recently."""
+    entries = parse_insights()
+    if not entries:
+        return
+
+    # Only show ~1 in 3 shell opens to avoid fatigue
+    if random.randint(1, 3) != 1:
+        return
+
+    # Pick from the last 20 insights
+    pool = entries[-20:] if len(entries) > 20 else entries
+    entry = random.choice(pool)
+
+    body = entry["body"].strip()
+    # Truncate long insights for the greeting
+    lines = body.split("\n")
+    if len(lines) > 4:
+        lines = lines[:4]
+        lines.append("  ...")
+    body = "\n".join(lines)
+
+    topic = entry["topic"]
+    date = entry["date"]
+
+    print(f"\033[2m╭─ Claude Insight ({date})\033[0m")
+    if topic:
+        print(f"\033[2m│ re: {topic[:60]}\033[0m")
+    print(f"\033[2m├─────────────────────────────────────\033[0m")
+    for line in body.split("\n"):
+        print(f"\033[2m│\033[0m {line}")
+    print(f"\033[2m╰─ \033[0;2mrun \033[0;1mclaude-insights recent\033[0;2m for more\033[0m")
+    print()
+
+
+def cmd_recent(n: int = 5):
+    """Show N most recent insights in the terminal."""
+    entries = parse_insights()
+    if not entries:
+        print("No insights logged yet.")
+        return
+
+    recent = entries[-n:]
+    for entry in reversed(recent):
+        topic = entry["topic"]
+        date = entry["date"]
+        body = entry["body"].strip()
+
+        print(f"\033[1;34m★ {date}\033[0m", end="")
+        if topic:
+            print(f"  \033[2m({topic[:50]})\033[0m")
+        else:
+            print()
+        print(body)
+        print(f"\033[2m{'─' * 50}\033[0m")
+
+
+def cmd_rofi():
+    """Browse insights in rofi."""
+    entries = parse_insights()
+    if not entries:
+        subprocess.run(
+            ["notify-send", "Claude Insights", "No insights logged yet."],
+            check=False,
+        )
+        return
+
+    # Build rofi menu - show date + topic + first line of body
+    menu_items = []
+    for i, entry in enumerate(reversed(entries)):
+        date = entry["date"]
+        topic = entry["topic"][:40] if entry["topic"] else "general"
+        first_line = entry["body"].strip().split("\n")[0][:60]
+        menu_items.append(f"{date} | {topic} | {first_line}")
+
+    menu_text = "\n".join(menu_items)
+
+    result = subprocess.run(
+        [
+            "rofi",
+            "-dmenu",
+            "-i",
+            "-p",
+            "★ Insights",
+            "-theme-str",
+            "window {width: 65%; height: 70%;} listview {lines: 18; scrollbar: true;}",
+        ],
+        input=menu_text,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+
+    # Find which entry was selected
+    selected = result.stdout.strip()
+    idx = menu_items.index(selected) if selected in menu_items else -1
+    if idx < 0:
+        return
+
+    entry = list(reversed(entries))[idx]
+
+    # Show full insight in a notification
+    body = entry["body"].strip()
+    title = f"★ {entry['date']}"
+    if entry["topic"]:
+        title += f" — {entry['topic'][:50]}"
+
+    subprocess.run(
+        [
+            "notify-send",
+            "-t",
+            "30000",
+            title,
+            body,
+        ],
+        check=False,
+    )
+
+
+def cmd_digest():
+    """Send a weekly digest notification with insight count and highlights."""
+    entries = parse_insights()
+    if not entries:
+        return
+
+    # Filter to last 7 days
+    now = datetime.now()
+    week_ago = now - timedelta(days=7)
+    recent = []
+    for entry in entries:
+        try:
+            entry_date = datetime.strptime(entry["date"], "%Y-%m-%d %H:%M")
+            if entry_date >= week_ago:
+                recent.append(entry)
+        except ValueError:
+            continue
+
+    if not recent:
+        subprocess.run(
+            [
+                "notify-send",
+                "★ Weekly Insights",
+                "No new insights this week. Time to use Claude more!",
+            ],
+            check=False,
+        )
+        return
+
+    # Build digest
+    topics = set()
+    for entry in recent:
+        if entry["topic"]:
+            topics.add(entry["topic"][:40])
+
+    summary = f"{len(recent)} insights this week"
+    if topics:
+        topic_list = ", ".join(list(topics)[:4])
+        if len(topics) > 4:
+            topic_list += f" +{len(topics) - 4} more"
+        summary += f"\n\nTopics: {topic_list}"
+
+    # Show a random highlight
+    highlight = random.choice(recent)
+    first_lines = "\n".join(highlight["body"].strip().split("\n")[:3])
+    summary += f"\n\nHighlight:\n{first_lines}"
+    summary += f"\n\nRun: claude-insights recent 10"
+
+    subprocess.run(
+        ["notify-send", "-t", "15000", "★ Weekly Claude Insights", summary],
+        check=False,
+    )
+
+
+def main():
+    if len(sys.argv) < 2:
+        cmd_recent(5)
+        return
+
+    cmd = sys.argv[1]
+    if cmd == "greeting":
+        cmd_greeting()
+    elif cmd == "rofi":
+        cmd_rofi()
+    elif cmd == "digest":
+        cmd_digest()
+    elif cmd == "recent":
+        n = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+        cmd_recent(n)
+    else:
+        print(f"Unknown command: {cmd}")
+        print("Usage: claude-insights [greeting|rofi|digest|recent [N]]")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
