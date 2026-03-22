@@ -5,11 +5,19 @@
   "spacing": 4,
 
   "modules-left": ["hyprland/workspaces"],
-  "modules-center": ["clock"],
+  "modules-center": ["custom/sysupdate", "clock"],
   "modules-right": ["disk", "disk#extra", "network", "wireplumber", "battery", "tray"],
 
   "hyprland/workspaces": {
     "format": "{id}"
+  },
+
+  "custom/sysupdate": {
+    "exec": "~/.local/bin/sysupdate-check",
+    "return-type": "json",
+    "interval": 3600,
+    "on-click": "~/.local/bin/sysupdate-launch",
+    "signal": 8
   },
 
   "clock": {

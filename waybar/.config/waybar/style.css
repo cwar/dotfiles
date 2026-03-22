@@ -26,6 +26,16 @@ window#waybar {
   border-radius: 4px;
 }
 
+#custom-sysupdate {
+  padding: 0 8px 0 0;
+  color: #39ff14;
+  font-size: 14px;
+}
+
+#custom-sysupdate.no-updates {
+  /* hidden when no updates */
+}
+
 #clock, #battery, #wireplumber, #tray, #network {
   padding: 0 6px;
 }
