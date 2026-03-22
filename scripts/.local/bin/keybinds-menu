@@ -59,7 +59,7 @@ declare -A bindings=(
     ["Super + Alt + T: Theme switcher"]="~/.local/bin/theme-rofi"
     ["Super + Alt + I: Claude Insights"]="~/.local/bin/claude-insights rofi"
     ["Super + Alt + S: Showcase (tweaks & projects)"]="~/.local/bin/showcase rofi"
-    ["Super + Alt + S: Showcase (tweaks & projects)"]="~/.local/bin/showcase rofi"
+    ["Super + Shift + W: Weather (local forecast)"]="ghostty --title=weather -e ~/.local/bin/weather-tui"
 
     # Screenshots - to clipboard
     ["Print: Screenshot area to clipboard"]="grim -g \"\$(slurp)\" - | wl-copy"
@@ -91,10 +91,11 @@ declare -A bindings=(
 
     # Pi (coding agent)
     ["Ctrl + Shift + S (in pi): Toggle split output mode"]=""
+    ["Ctrl + Shift + K (in pi): Unstick — interrupt hanging tool"]=""
 
     # System
     ["Super + L: Lock screen"]="hyprlock"
-    ["Super + Escape: Hackers screensaver"]="~/.local/bin/hackers-screensaver"
+    ["Super + Escape: Power menu (shutdown/restart/lock/sleep)"]="~/.local/bin/power-menu"
     ["Super + M: Exit Hyprland"]="hyprctl dispatch exit"
     ["Super + K: Show this menu"]=""
     ["Super + Shift + G: Lazygit (uses terminal cwd)"]="~/.local/bin/launch-lazygit"
