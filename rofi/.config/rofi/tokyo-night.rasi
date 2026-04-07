@@ -1,13 +1,13 @@
 * {
-    bg: #0a0e14e6;
-    bg-solid: #0a0e14;
-    bg-alt: #12171f;
-    bg-selected: #1a2332;
-    fg: #d4ffda;
-    fg-alt: #5c7a65;
-    accent: #39ff14;
-    accent-alt: #ff2d95;
-    urgent: #ff2d95;
+    bg: #1a1b23e6;
+    bg-solid: #1a1b23;
+    bg-alt: #2a2d3a;
+    bg-selected: #6272a4;
+    fg: #f8f8f2;
+    fg-alt: #6272a4;
+    accent: #bd93f9;
+    accent-alt: #ff79c6;
+    urgent: #ff5555;
 
     background-color: transparent;
     text-color: @fg;
@@ -22,7 +22,7 @@ window {
     width: 600px;
     background-color: @bg;
     border: 1px;
-    border-color: @accent;
+    border-color: @bg-alt;
     border-radius: 16px;
     padding: 0;
 }
@@ -64,7 +64,7 @@ listview {
 
 scrollbar {
     handle-width: 4px;
-    handle-color: @accent;
+    handle-color: @fg-alt;
     border-radius: 4px;
     background-color: transparent;
 }
@@ -83,7 +83,7 @@ element alternate.normal {
 
 element selected.normal {
     background-color: @bg-selected;
-    text-color: @accent;
+    text-color: @fg;
 }
 
 element-icon {
@@ -98,7 +98,7 @@ element-text {
 }
 
 element-text selected {
-    text-color: @accent;
+    text-color: @fg;
 }
 
 message {
