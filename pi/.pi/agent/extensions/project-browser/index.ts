@@ -401,12 +401,12 @@ async function discoverNonGitDirs(): Promise<Project[]> {
 			// Skip if it has .git — discoverRepos already handles those
 			if (existsSync(join(fullPath, ".git"))) continue;
 
-			// Must have actual code files (not just empty dirs or subdirectory containers like ~/code/spotify/)
+			// Must have actual code files (not just empty dirs or subdirectory containers like ~/code/work/)
 			const files = await readdir(fullPath, { withFileTypes: true });
 			const codeFiles = files.filter((f) => f.isFile() && !f.name.startsWith(".") && f.name !== "README.md");
 			const srcDirs = files.filter((f) => f.isDirectory() && ["bin", "lib", "src", "cmd"].includes(f.name));
 
-			// Skip if it's just a container for other git repos (like ~/code/spotify/)
+			// Skip if it's just a container for other git repos (like ~/code/work/)
 			const subDirsWithGit = files.filter((f) => f.isDirectory() && existsSync(join(fullPath, f.name, ".git")));
 			if (subDirsWithGit.length > 0 && codeFiles.length === 0 && srcDirs.length === 0) continue;
 
@@ -585,8 +585,8 @@ async function discoverAll(): Promise<Project[]> {
 
 function shortRemote(remote?: string): string | undefined {
 	if (!remote) return undefined;
-	// git@ghe.spotify.net:holocron/archdruid.git → holocron/archdruid
-	// https://spotify.ghe.com/data/data.git → data/data
+	// git@github.com:user/repo.git → user/repo
+	// https://github.com/user/project.git → user/project
 	return remote
 		.replace(/\.git$/, "")
 		.replace(/^git@[^:]+:/, "")

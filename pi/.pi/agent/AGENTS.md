@@ -1,13 +1,5 @@
 # User-Level Instructions
 
-## MCP Server Discovery
-
-When listing MCP servers from MCP-Explorer, exclude servers whose name ends in `-legacy`. These are deprecated duplicates with active replacements. Present only the non-legacy version.
-
-## GitHub Enterprise (GHE) Access
-
-GHE URLs (ghe.spotify.net) require authentication and cannot be fetched directly via HTTP. When the user shares a GHE link or asks about a PR, PR comment, issue, or review, **always use the `gh` CLI directly** — never attempt to fetch the URL first. Use commands like `gh pr view`, `gh pr view --comments`, `gh api`, etc. to retrieve the relevant content.
-
 ## Coding Workflow — Red-Green TDD by Default
 
 When working on any coding task — unless the user explicitly specifies a different workflow — follow **Red-Green-Refactor TDD**:

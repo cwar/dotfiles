@@ -364,7 +364,7 @@ const CONSOLIDATION_PROMPT = `You are helping an engineer prepare their performa
 YOUR JOB: Synthesize these into 10-20 HIGH-LEVEL accomplishments grouped by project or theme. This is for a performance review — think big picture, not individual tasks.
 
 RULES:
-- MERGE all sessions about the same project/area into ONE accomplishment. 46 sessions on "babka-osd-infra" might become 2-3 accomplishments about different aspects of that work.
+- MERGE all sessions about the same project/area into ONE accomplishment. 46 sessions on "my-infra-project" might become 2-3 accomplishments about different aspects of that work.
 - Write each accomplishment as one impactful sentence a manager would appreciate.
 - Group related work by project or theme (e.g., "Infrastructure Automation", "Developer Tooling", "Data Platform").
 - Focus on OUTCOMES and BUSINESS VALUE, not technical minutiae.
