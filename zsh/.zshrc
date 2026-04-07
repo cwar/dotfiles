@@ -104,6 +104,7 @@ source $ZSH/oh-my-zsh.sh
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 export PATH="$HOME/.npm-global/bin:$PATH"
+export POWERLINE_NERD_FONTS=1
 
 # Try - dated experiment folders
 eval "$(ruby ~/.local/bin/try.rb init ~/tries)"
