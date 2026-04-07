@@ -1,0 +1,19 @@
+{
+  "skills": [
+    "~/.claude/skills",
+    "~/.claude/plugins/marketplaces/anthropic-agent-skills/skills",
+    "~/.claude/plugins/marketplaces/obsidian-skills/skills",
+    "~/.claude/plugins/marketplaces/claude-plugins-official/plugins",
+    "~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins"
+  ],
+  "enableSkillCommands": true,
+  "lastChangelogVersion": "0.65.2",
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-opus-4-6",
+  "defaultThinkingLevel": "xhigh",
+  "hideThinkingBlock": true,
+  "quietStartup": true,
+  "packages": [
+    "npm:pi-roam"
+  ]
+}

@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Pi agent machine-local files (not stowed, but ignore if accidentally added)
+pi/.pi/agent/auth.json
+pi/.pi/agent/mcp-auth/
+pi/.pi/agent/sessions/
+pi/.pi/agent/repo-memory/
+pi/.pi/agent/pi-crash.log
+pi/.pi/agent/mcp.json.bak
+
+# Vite cache
+.vite/
+
+# OS
+.DS_Store

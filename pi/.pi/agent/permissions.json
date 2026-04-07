@@ -1,0 +1,42 @@
+{
+  "allow": [
+    "Write(/tmp/**)",
+    "Edit(/tmp/**)",
+    "Bash(git *)",
+    "Bash(gh *)",
+    "Bash(find *)",
+    "Bash(echo *)",
+    "Bash(cat *)",
+    "Bash(ls *)",
+    "Bash(grep *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(wc *)",
+    "Bash(sort *)",
+    "Bash(sed *)",
+    "Bash(cd *)",
+    "Bash(pwd)",
+    "Bash(mkdir *)",
+    "Bash(python3 *)",
+    "Bash(node *)",
+    "Bash(npm *)",
+    "Bash(mise *)",
+    "Bash(stow *)",
+    "Bash(pacman *)",
+    "Bash(docker *)",
+    "Edit(/home/cwar/.config/*.toml)"
+  ],
+  "deny": [
+    "Bash(rm -rf /)",
+    "Bash(rm -rf /*)",
+    "Bash(sudo rm -rf *)",
+    "Write(.env)",
+    "Write(.env.*)",
+    "Edit(.env)",
+    "Edit(.env.*)"
+  ],
+  "gate": [
+    "write",
+    "edit"
+  ]
+}
