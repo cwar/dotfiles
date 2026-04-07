@@ -4,7 +4,8 @@
 declare -A bindings=(
     # Window Management
     ["Super + Return: Open terminal"]="ghostty"
-    ["Super + W: Close window"]="hyprctl dispatch killactive"
+    ["Super + W: Close window (recoverable)"]="~/.local/bin/hypr-undo-close close"
+    ["Super + Z: Undo close window"]="~/.local/bin/hypr-undo-close pop"
     ["Super + T: Toggle floating"]="hyprctl dispatch togglefloating"
     ["Super + P: Toggle pseudo-tiling"]="hyprctl dispatch pseudo"
     ["Super + J: Toggle split"]="hyprctl dispatch togglesplit"
@@ -59,6 +60,8 @@ declare -A bindings=(
     ["Super + Alt + T: Theme switcher"]="~/.local/bin/theme-rofi"
     ["Super + Alt + I: Claude Insights"]="~/.local/bin/claude-insights rofi"
     ["Super + Alt + S: Showcase (tweaks & projects)"]="~/.local/bin/showcase rofi"
+    ["Super + A: Audio source picker"]="ghostty -e ~/.local/bin/audio-picker"
+    ["Super + B: Bluetooth manager"]="ghostty --title=bluetooth -e bluetui"
     ["Super + Shift + W: Weather (local forecast)"]="ghostty --title=weather -e ~/.local/bin/weather-tui"
 
     # Screenshots - to clipboard

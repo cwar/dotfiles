@@ -1,0 +1,6 @@
+[Unit]
+Description=Reap expired windows from hypr-undo-close trash
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/hypr-undo-close reap

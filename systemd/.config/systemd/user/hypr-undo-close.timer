@@ -1,0 +1,9 @@
+[Unit]
+Description=Reap expired hypr-undo-close windows every 30s
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+
+[Install]
+WantedBy=timers.target
