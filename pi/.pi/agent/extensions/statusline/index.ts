@@ -2,7 +2,7 @@
  * Statusline Extension
  *
  * Renders a clean status line in the editor's top border — no separate footer.
- * Shows model, thinking level, path, git status, context %, and cost.
+ * Shows model, thinking level, path, git status, PR reviews, context %, and cost.
  *
  * Features:
  *   - Async git status with 1s cache TTL, auto-invalidation on file writes
@@ -188,6 +188,152 @@ function getGitStatus(providerBranch: string | null): GitStatus {
 function invalidateGitStatus(): void { gitCache = null; gitGeneration++; }
 function invalidateGitBranch(): void { gitBranchCache = null; branchGeneration++; }
 
+// ── Async PR Reviews ───────────────────────────────────────────────────
+//
+// Non-blocking PR review count with long TTL caching.
+// Queries the `gh` CLI for open PRs needing review, filters out:
+//   - Draft PRs
+//   - PRs authored by the current user
+//   - PRs where the user already left APPROVED or CHANGES_REQUESTED
+//     on the current head commit (stale reviews DO show up again)
+
+interface PrReviewState {
+  count: number;
+  prs: Array<{ number: number; title: string; author: string; url: string }>;
+}
+
+const PR_EMPTY: PrReviewState = { count: 0, prs: [] };
+const PR_TTL = 180_000; // 3 minutes
+
+let prCache: { state: PrReviewState; ts: number; repoKey: string } | null = null;
+let prPending: Promise<void> | null = null;
+let prRepoInfo: { host: string; ownerRepo: string } | null = null;
+let prRepoResolved = false;
+let prLogin: string | null = null;
+
+function runCmd(cmd: string, args: string[], timeoutMs = 10_000): Promise<string | null> {
+  return new Promise((resolve) => {
+    let stdout = "", done = false;
+    const finish = (r: string | null) => { if (done) return; done = true; clearTimeout(tid); resolve(r); };
+    const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    proc.stdout.on("data", (d: Buffer) => { stdout += d; });
+    proc.on("close", (code: number | null) => finish(code === 0 ? stdout.trim() : null));
+    proc.on("error", () => finish(null));
+    const tid = setTimeout(() => { proc.kill(); finish(null); }, timeoutMs);
+  });
+}
+
+async function resolveRepoInfo(): Promise<{ host: string; ownerRepo: string } | null> {
+  const remote = await runGit(["remote", "get-url", "origin"], 500);
+  if (!remote) return null;
+
+  let host: string, ownerRepo: string;
+
+  // HTTPS: https://host/owner/repo.git
+  const httpsMatch = remote.match(/^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/);
+  if (httpsMatch) {
+    host = httpsMatch[1];
+    ownerRepo = httpsMatch[2];
+  } else {
+    // SSH: git@host:owner/repo.git
+    const sshMatch = remote.match(/^[^@]+@([^:]+):(.+?)(?:\.git)?$/);
+    if (!sshMatch) return null;
+    host = sshMatch[1];
+    ownerRepo = sshMatch[2];
+  }
+
+  return { host, ownerRepo };
+}
+
+async function resolveGhLogin(host: string): Promise<string | null> {
+  const hostArgs = host !== "github.com" ? ["--hostname", host] : [];
+  return runCmd("gh", ["api", "user", ...hostArgs, "-q", ".login"]);
+}
+
+async function fetchPrReviews(): Promise<PrReviewState> {
+  if (!prRepoInfo) {
+    prRepoInfo = await resolveRepoInfo();
+    prRepoResolved = true;
+    if (!prRepoInfo) return PR_EMPTY;
+  }
+
+  const { host, ownerRepo } = prRepoInfo;
+  const repoUrl = `https://${host}/${ownerRepo}`;
+
+  if (!prLogin) {
+    prLogin = await resolveGhLogin(host);
+    if (!prLogin) return PR_EMPTY;
+  }
+
+  const json = await runCmd("gh", [
+    "pr", "list",
+    "-R", repoUrl,
+    "--state", "open",
+    "--json", "number,title,isDraft,author,headRefOid,reviews,url",
+    "--limit", "100",
+  ]);
+  if (!json) return PR_EMPTY;
+
+  try {
+    const prs = JSON.parse(json) as Array<{
+      number: number; title: string; isDraft: boolean;
+      author: { login: string }; headRefOid: string;
+      reviews: Array<{ author: { login: string }; state: string; commit: { oid: string } }>;
+      url: string;
+    }>;
+
+    const login = prLogin!;
+    const filtered = prs.filter(pr => {
+      if (pr.isDraft) return false;
+      if (pr.author.login === login) return false;
+      // Check if I have a non-stale substantive review
+      const hasReview = pr.reviews.some(r =>
+        r.author.login === login &&
+        (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED") &&
+        r.commit.oid === pr.headRefOid
+      );
+      return !hasReview;
+    });
+
+    return {
+      count: filtered.length,
+      prs: filtered.map(pr => ({
+        number: pr.number,
+        title: pr.title,
+        author: pr.author.login,
+        url: pr.url,
+      })),
+    };
+  } catch {
+    return PR_EMPTY;
+  }
+}
+
+function getPrReviews(): PrReviewState {
+  const now = Date.now();
+  const repoKey = prRepoInfo ? `${prRepoInfo.host}/${prRepoInfo.ownerRepo}` : "";
+
+  if (prCache && prCache.repoKey === repoKey && now - prCache.ts < PR_TTL) {
+    return prCache.state;
+  }
+
+  if (!prPending) {
+    prPending = fetchPrReviews().then((state) => {
+      const key = prRepoInfo ? `${prRepoInfo.host}/${prRepoInfo.ownerRepo}` : "";
+      prCache = { state, ts: Date.now(), repoKey: key };
+      prPending = null;
+    }).catch(() => { prPending = null; });
+  }
+
+  return prCache?.state ?? PR_EMPTY;
+}
+
+function invalidatePrReviews(): void {
+  prCache = null;
+  prRepoInfo = null;
+  prRepoResolved = false;
+}
+
 // ── Formatting Helpers ─────────────────────────────────────────────────
 
 function fmtTokens(n: number): string {
@@ -208,6 +354,7 @@ interface SegCtx {
   model: any;
   thinkingLevel: string;
   git: GitStatus;
+  prReviews: PrReviewState;
   contextPct: number;
   contextWindow: number;
   autoCompact: boolean;
@@ -285,6 +432,16 @@ const segGit: Segment = ({ theme, git }) => {
   return text;
 };
 
+const PR_COLOR = "#b4befe"; // Lavender — stands out but not alarming
+const PR_WARN_COLOR = "#e5a855"; // Amber for high counts
+
+const segPrReviews: Segment = ({ prReviews }) => {
+  if (prReviews.count === 0) return null;
+  const icon = hasNerdFonts() ? "\uEB29" : "PR"; // nf-cod-git_pull_request
+  const color = prReviews.count >= 5 ? PR_WARN_COLOR : PR_COLOR;
+  return hex(color, `${icon} ${prReviews.count}`);
+};
+
 const segContext: Segment = ({ theme, contextPct, contextWindow, autoCompact }) => {
   const ic = icons();
   const autoStr = autoCompact && ic.auto ? ` ${ic.auto}` : "";
@@ -305,6 +462,30 @@ const segCacheRead: Segment = ({ theme, cacheRead }) => {
   return theme.fg("muted", `cache:${fmtTokens(cacheRead)}`);
 };
 
+let lastMessageTime: Date | null = null;
+
+const segTimestamp: Segment = ({ theme }) => {
+  if (!lastMessageTime) return null;
+  const now = Date.now();
+  const diffMs = now - lastMessageTime.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHr = Math.floor(diffMin / 60);
+
+  // Format: "HH:MM (Xm ago)" or just "HH:MM (now)" if < 30s
+  const hh = String(lastMessageTime.getHours()).padStart(2, "0");
+  const mm = String(lastMessageTime.getMinutes()).padStart(2, "0");
+  const timeStr = `${hh}:${mm}`;
+
+  let ago: string;
+  if (diffSec < 30) ago = "now";
+  else if (diffMin < 1) ago = `${diffSec}s ago`;
+  else if (diffHr < 1) ago = `${diffMin}m ago`;
+  else ago = `${diffHr}h${diffMin % 60}m ago`;
+
+  return theme.fg("dim", `${timeStr} (${ago})`);
+};
+
 const segExtStatuses: Segment = ({ extensionStatuses }) => {
   if (!extensionStatuses || extensionStatuses.size === 0) return null;
   const parts: string[] = [];
@@ -318,7 +499,7 @@ const segExtStatuses: Segment = ({ extensionStatuses }) => {
 };
 
 // Ordered list of segments to render
-const SEGMENTS: Segment[] = [segModel, segPath, segGit, segContext, segCacheRead, segCost, segExtStatuses];
+const SEGMENTS: Segment[] = [segModel, segPath, segGit, segPrReviews, segContext, segCacheRead, segCost, segTimestamp, segExtStatuses];
 
 // ── Status Line Assembly ───────────────────────────────────────────────
 
@@ -361,7 +542,7 @@ export default function statusline(pi: ExtensionAPI) {
   let currentCtx: any = null;
   let footerDataRef: ReadonlyFooterDataProvider | null = null;
   let tuiRef: any = null;
-  // (sessionStartTime reserved for future time_spent segment)
+
 
   // ── Git branch change patterns ───────────────────────────────────
 
@@ -413,6 +594,7 @@ export default function statusline(pi: ExtensionAPI) {
       model: ctx?.model,
       thinkingLevel,
       git: getGitStatus(gitBranch),
+      prReviews: getPrReviews(),
       contextPct: ctxPct,
       contextWindow: ctxWindow,
       autoCompact: ctx?.settingsManager?.getCompactionSettings?.()?.enabled ?? true,
@@ -524,11 +706,18 @@ export default function statusline(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     currentCtx = ctx;
+    invalidatePrReviews();
     if (enabled && ctx.hasUI) setupEditor(ctx);
   });
 
   pi.on("session_switch", async (_event, ctx) => {
     currentCtx = ctx;
+    invalidatePrReviews();
+  });
+
+  pi.on("agent_end", async () => {
+    lastMessageTime = new Date();
+    tuiRef?.requestRender();
   });
 
   // Invalidate git on file changes

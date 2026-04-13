@@ -63,6 +63,7 @@ declare -A bindings=(
     ["Super + A: Audio source picker"]="ghostty -e ~/.local/bin/audio-picker"
     ["Super + B: Bluetooth manager"]="ghostty --title=bluetooth -e bluetui"
     ["Super + Shift + W: Weather (local forecast)"]="ghostty --title=weather -e ~/.local/bin/weather-tui"
+    ["Super + Shift + M: Meeting launcher"]="~/.local/bin/meeting-launcher"
 
     # Screenshots - to clipboard
     ["Print: Screenshot area to clipboard"]="grim -g \"\$(slurp)\" - | wl-copy"
@@ -102,7 +103,6 @@ declare -A bindings=(
     ["Super + M: Exit Hyprland"]="hyprctl dispatch exit"
     ["Super + K: Show this menu"]=""
     ["Super + Shift + G: Lazygit (uses terminal cwd)"]="~/.local/bin/launch-lazygit"
-    ["Super + Shift + I: Toggle monitor input (HDMI1/HDMI2)"]="~/.local/bin/samsung-input-toggle"
     ["Super + G: Keyboard mouse control"]="wl-kbptr"
 )
 

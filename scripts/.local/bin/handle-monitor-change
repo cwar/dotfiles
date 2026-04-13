@@ -1,0 +1,19 @@
+#!/bin/bash
+# Restart waybar when monitors are added or removed
+# Hyprland moves windows automatically on hotplug, but waybar
+# can get stuck on a now-disconnected output.
+
+handle() {
+    case $1 in
+        monitorremoved*|monitoradded*)
+            sleep 0.5
+            pkill waybar
+            waybar &
+            ;;
+    esac
+}
+
+socat -U - UNIX-CONNECT:"$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock" \
+    | while read -r line; do
+        handle "$line"
+    done

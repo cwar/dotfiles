@@ -41,12 +41,46 @@ The plan JSON structure:
 Evidence fields are optional. When present, each evidence item contains the shell
 command that was run and its output. This ensures observations about code — especially
 code outside the diff — are grounded in real extracted snippets, not AI recollection.
+
+Artifacts are optional supplemental materials — diagrams, references, and contextual
+notes — that help the reviewer understand the change without reading every line.
+Supported artifact types:
+  - "diagram": Mermaid diagram (rendered via mermaid.js)
+  - "reference": Link to related resource (PR, doc, ADR, Slack thread)
+  - "note": Contextual explanation (background, domain knowledge, gotchas)
+
+Artifacts can appear at the top level (shown in a dedicated Context tab) or per-phase
+(shown inline within the phase). Both are optional.
+
+Example:
+{
+    "artifacts": [
+        {
+            "type": "diagram",
+            "title": "Module dependency graph",
+            "content": "graph LR\n  A --> B\n  B --> C"
+        },
+        {
+            "type": "reference",
+            "title": "Related ADR",
+            "url": "https://...",
+            "description": "ADR-003 explains the persistence choice"
+        },
+        {
+            "type": "note",
+            "title": "Background",
+            "content": "This service was originally a monolith..."
+        }
+    ]
+}
 """
 
 import argparse
+import base64
 import json
 import html
 import re
+import subprocess
 import sys
 import os
 from pathlib import Path
@@ -86,6 +120,52 @@ def normalize_file_entry(entry) -> tuple:
     return (entry["path"], entry.get("start"), entry.get("end"), entry.get("label"))
 
 
+def fetch_file_content(file_path: str, repo_dir: str = None, head_sha: str = None) -> str | None:
+    """Try to fetch content for a file missing from the diff.
+
+    Uses git show with the PR head SHA first (most accurate), then falls back
+    to reading from the working tree.  Returns None when the file cannot be
+    retrieved by any method.
+    """
+    # Try git show <sha>:<path> — gets content from the exact PR commit
+    if head_sha and repo_dir:
+        try:
+            result = subprocess.run(
+                ['git', 'show', f'{head_sha}:{file_path}'],
+                capture_output=True, text=True, cwd=repo_dir, timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+    # Fall back to reading the file from the working tree
+    if repo_dir:
+        full_path = os.path.join(repo_dir, file_path)
+        try:
+            with open(full_path, 'r') as f:
+                return f.read()
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    return None
+
+
+def generate_synthetic_diff(file_path: str, content: str) -> str:
+    """Generate a synthetic unified diff showing a new file with all content as additions."""
+    lines = content.splitlines()
+    diff_lines = [
+        f"diff --git a/{file_path} b/{file_path}",
+        "new file mode 100644",
+        "--- /dev/null",
+        f"+++ b/{file_path}",
+        f"@@ -0,0 +1,{len(lines)} @@",
+    ]
+    for line in lines:
+        diff_lines.append(f"+{line}")
+    return "\n".join(diff_lines)
+
+
 def count_diff_stats(diff_text: str, filter_start: int = None, filter_end: int = None) -> tuple[int, int]:
     """Count additions and deletions, optionally filtered to a new-file line range."""
     if not diff_text:
@@ -105,7 +185,11 @@ def count_diff_stats(diff_text: str, filter_start: int = None, filter_end: int =
                 new_line = int(match.group(2))
             continue
         if raw_line.startswith("+++") or raw_line.startswith("---") or \
-           raw_line.startswith("diff --git") or raw_line.startswith("index "):
+           raw_line.startswith("diff --git") or raw_line.startswith("index ") or \
+           raw_line.startswith("new file mode") or raw_line.startswith("deleted file mode") or \
+           raw_line.startswith("old mode") or raw_line.startswith("new mode") or \
+           raw_line.startswith("similarity index") or raw_line.startswith("rename from") or \
+           raw_line.startswith("rename to"):
             continue
         effective_new = new_line
         if raw_line.startswith("+"):
@@ -270,6 +354,15 @@ def get_hljs_language(filepath: str) -> str:
     return EXTENSION_TO_HLJS_LANG.get(ext.lower(), '')
 
 
+MARKDOWN_EXTENSIONS = {'.md', '.mdx', '.markdown', '.mdown', '.mkd'}
+
+
+def is_markdown_file(filepath: str) -> bool:
+    """Check if a file is a markdown file that supports rich preview."""
+    ext = os.path.splitext(filepath)[1].lower()
+    return ext in MARKDOWN_EXTENSIONS
+
+
 def render_diff_html(diff_text: str, file_path: str, phase_num: int,
                      filter_start: int = None, filter_end: int = None) -> str:
     """Render a unified diff as syntax-highlighted HTML with interactive line gutters.
@@ -295,6 +388,13 @@ def render_diff_html(diff_text: str, file_path: str, phase_num: int,
     for raw_line in diff_text.splitlines():
         escaped = html.escape(raw_line)
         if raw_line.startswith("diff --git") or raw_line.startswith("index "):
+            continue
+        elif raw_line.startswith("new file mode") or raw_line.startswith("deleted file mode") or \
+             raw_line.startswith("old mode") or raw_line.startswith("new mode") or \
+             raw_line.startswith("similarity index") or raw_line.startswith("rename from") or \
+             raw_line.startswith("rename to"):
+            if not filtering:
+                lines.append(f'<div class="diff-meta">{escaped}</div>')
             continue
         elif raw_line.startswith("+++") or raw_line.startswith("---"):
             if not filtering:
@@ -358,12 +458,19 @@ def render_diff_html(diff_text: str, file_path: str, phase_num: int,
             data_attrs = f'data-old-line="{old_line}" data-new-line="{new_line}"'
             old_line += 1
             new_line += 1
+        # Wrap the diff prefix char (+/-/space) in a span for coloring
+        if len(escaped) > 0:
+            prefix_char = escaped[0]
+            rest = escaped[1:]
+            code_html = f'<span class="diff-prefix">{prefix_char}</span>{rest}'
+        else:
+            code_html = escaped
         lines.append(
             f'<div class="diff-line-row {css_class}" data-lidx="{line_idx}" {data_attrs}>'
             f'<div class="diff-ln diff-ln-old">{old_ln_display}</div>'
             f'<div class="diff-ln diff-ln-new">{new_ln_display}</div>'
             f'<div class="diff-gutter"></div>'
-            f'<div class="diff-code">{escaped}</div>'
+            f'<div class="diff-code">{code_html}</div>'
             f'</div>'
         )
         line_idx += 1
@@ -378,6 +485,15 @@ SEVERITY_MAP = {
     "good": ("✅", "Looks good", "#69db7c"),
     "question": ("❓", "Question", "#da77f2"),
 }
+
+
+def format_inline_code(escaped_text: str) -> str:
+    """Convert backtick-delimited spans to <code> tags in already-escaped HTML.
+
+    Handles `single backtick` inline code. The input must already be
+    html.escape()'d so the backtick content is safe to wrap in tags.
+    """
+    return re.sub(r'`([^`]+)`', r'<code>\1</code>', escaped_text)
 
 
 def render_evidence(evidence_list: list[dict], note_id: str) -> str:
@@ -413,15 +529,16 @@ def render_ai_notes(notes: list[dict], phase_num: int) -> str:
     for idx, note in enumerate(notes):
         sev = note.get("severity", "suggestion")
         icon, label, color = SEVERITY_MAP.get(sev, ("💬", "Note", "#adb5bd"))
-        text = html.escape(note["text"])
+        text_escaped = html.escape(note["text"])
+        text_display = format_inline_code(text_escaped)
         note_id = f"ai-note-{phase_num}-{idx}"
         evidence_html = render_evidence(note.get("evidence", []), note_id)
         has_evidence_class = " has-evidence" if note.get("evidence") else ""
         items.append(
-            f'<div class="ai-note{has_evidence_class}" id="{note_id}" style="border-left-color: {color}" data-phase="{phase_num}" data-severity="{sev}" data-text="{text}">'
+            f'<div class="ai-note{has_evidence_class}" id="{note_id}" style="border-left-color: {color}" data-phase="{phase_num}" data-severity="{sev}" data-text="{text_escaped}">'
             f'<div class="ai-note-content">'
             f'<span class="ai-note-label" style="color: {color}">{icon} {label}</span> '
-            f'{text}'
+            f'{text_display}'
             f'{evidence_html}'
             f'</div>'
             f'<button class="flag-btn" onclick="toggleFlag(\'{note_id}\')" title="Flag for discussion">🚩</button>'
@@ -523,13 +640,95 @@ def render_impact_panel(impact: dict) -> str:
     '''
 
 
-def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
+def escape_mermaid(text: str) -> str:
+    """Escape mermaid content for safe embedding in HTML.
+
+    Mermaid syntax uses -->, |text|, ", and other characters that
+    html.escape() would mangle. We only escape < and & to prevent
+    tag injection while keeping mermaid operators intact.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;")
+
+
+def render_artifact(artifact: dict, artifact_id: str) -> str:
+    """Render a single artifact (diagram, reference, or note)."""
+    art_type = artifact.get("type", "note")
+    title_escaped = html.escape(artifact.get("title", ""))
+    title_display = format_inline_code(title_escaped)
+
+    if art_type == "diagram":
+        content = artifact.get("content", "")
+        # Store mermaid source in a data attribute; rendered client-side via
+        # mermaid.render() API which gives us full control over timing.
+        # The source is base64-encoded to avoid HTML entity issues — mermaid
+        # syntax uses <, >, ", | which conflict with HTML attributes.
+        encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
+        return (
+            f'<div class="artifact artifact-diagram" id="{artifact_id}">'
+            f'<div class="artifact-header">'
+            f'<span class="artifact-icon">📊</span> '
+            f'<span class="artifact-title">{title_display}</span>'
+            f'</div>'
+            f'<div class="mermaid-container" data-mermaid-src="{encoded}">'
+            f'<span class="mermaid-loading">⏳ Loading diagram…</span>'
+            f'</div>'
+            f'</div>'
+        )
+    elif art_type == "reference":
+        url = html.escape(artifact.get("url", ""))
+        desc_escaped = html.escape(artifact.get("description", ""))
+        desc_display = format_inline_code(desc_escaped)
+        return (
+            f'<div class="artifact artifact-reference" id="{artifact_id}">'
+            f'<div class="artifact-header">'
+            f'<span class="artifact-icon">🔗</span> '
+            f'<a class="artifact-title artifact-link" href="{url}" target="_blank">{title_display} ↗</a>'
+            f'</div>'
+            f'{f"<div class=artifact-desc>{desc_display}</div>" if desc_escaped else ""}'
+            f'</div>'
+        )
+    else:  # note
+        content_escaped = html.escape(artifact.get("content", ""))
+        content_display = format_inline_code(content_escaped)
+        return (
+            f'<div class="artifact artifact-note" id="{artifact_id}">'
+            f'<div class="artifact-header">'
+            f'<span class="artifact-icon">📝</span> '
+            f'<span class="artifact-title">{title_display}</span>'
+            f'</div>'
+            f'<div class="artifact-content">{content_display}</div>'
+            f'</div>'
+        )
+
+
+def render_artifacts_section(artifacts: list[dict], id_prefix: str, heading: str = "📚 Context & References") -> str:
+    """Render a collapsible section of artifacts."""
+    if not artifacts:
+        return ""
+    items = []
+    for idx, artifact in enumerate(artifacts):
+        artifact_id = f"{id_prefix}-{idx}"
+        items.append(render_artifact(artifact, artifact_id))
+    return (
+        f'<div class="artifacts-section">'
+        f'<h3>{heading} <span class="artifact-count">({len(artifacts)})</span></h3>'
+        + "\n".join(items)
+        + f'</div>'
+    )
+
+
+def generate_html(plan: dict, file_diffs: dict[str, str],
+                  repo_dir: str = None, head_sha: str = None) -> str:
     pr = plan
     phases = pr["phases"]
     num_phases = len(phases)
 
     # Build impact panel
     impact_html = render_impact_panel(pr.get("impact_analysis"))
+
+    # Build top-level artifacts (Context tab)
+    top_artifacts = pr.get("artifacts", [])
+    has_context_tab = len(top_artifacts) > 0
 
     # Build phase sections
     phase_sections = []
@@ -545,42 +744,61 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
         for entry in phase_files:
             f, f_start, f_end, f_label = normalize_file_entry(entry)
             diff = file_diffs.get(f, "")
+            # Auto-fetch content for new files missing from the diff
+            if not diff:
+                content = fetch_file_content(f, repo_dir, head_sha)
+                if content is not None:
+                    diff = generate_synthetic_diff(f, content)
             adds, dels = count_diff_stats(diff, f_start, f_end)
             phase_additions += adds
             phase_deletions += dels
 
-            diff_rendered = render_diff_html(diff, f, phase_num, f_start, f_end) if diff else '<div class="diff-ctx">(no diff found for this file)</div>'
+            diff_rendered = render_diff_html(diff, f, phase_num, f_start, f_end) if diff else '<div class="diff-meta" style="padding: 12px 16px; font-style: italic;">⚠️ No diff content found — if this is a new file, its content was not captured in the diff output</div>'
             hljs_lang = get_hljs_language(f)
             lang_attr = f' data-lang="{hljs_lang}"' if hljs_lang else ''
             section_html = f' <span class="file-section">→ {html.escape(f_label)}</span>' if f_label else ''
             range_html = f' <span class="file-range">L{f_start}–L{f_end}</span>' if f_start and f_end else ''
+            is_md = is_markdown_file(f)
+            md_attr = ' data-markdown="true"' if is_md else ''
+            preview_btn = '<button class="btn-preview" onclick="event.stopPropagation();toggleMarkdownPreview(this)" title="Toggle rendered markdown preview">👁️ Preview</button>' if is_md else ''
+            preview_div = '<div class="file-preview" style="display:none"></div>' if is_md else ''
             files_html.append(f'''
-                <div class="file-block" data-phase="{phase_num}" data-file="{html.escape(f)}">
-                    <div class="file-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+                <div class="file-block" data-phase="{phase_num}" data-file="{html.escape(f)}"{md_attr}>
+                    <div class="file-header" onclick="toggleFileCollapse(this)">
                         <span class="file-path">{html.escape(f)}</span>{section_html}{range_html}
+                        {preview_btn}
+                        <button class="btn-copy-code" onclick="event.stopPropagation();copyFileCode(this)" title="Copy new-file code (context + additions, no deletions)">📋</button>
                         <span class="file-stats">+{adds} −{dels}</span>
                         <span class="toggle-hint">▼</span>
                     </div>
                     <div class="file-diff"{lang_attr}>
                         {diff_rendered}
                     </div>
+                    {preview_div}
                 </div>
             ''')
 
         ai_notes_html = render_ai_notes(phase.get("ai_notes", []), phase_num)
+        phase_artifacts_html = render_artifacts_section(
+            phase.get("artifacts", []),
+            f"phase-{phase_num}-artifact",
+            heading="📚 Phase Context"
+        )
         risk_badge_html = render_risk_badge(phase_risk) if phase_risk else ""
 
         phase_sections.append(f'''
-        <div class="phase" id="phase-{phase_num}" {"" if i == 0 else 'style="display:none"'}>
+        <div class="phase" id="phase-{phase_num}" {"" if i == 0 and not has_context_tab else 'style="display:none"'}>
             <div class="phase-header">
                 <h2>Phase {phase_num}: {html.escape(phase["name"])}</h2>
                 {risk_badge_html}
                 <span class="phase-stats">{len(phase_files)} file{"s" if len(phase_files) != 1 else ""}, +{phase_additions} −{phase_deletions}</span>
                 <button class="btn-breakdown" onclick="requestBreakdown({phase_num})" title="Copy a request to split this phase into smaller sub-phases">🔬 Break down</button>
             </div>
-            <p class="phase-desc">{html.escape(phase["description"])}</p>
+            <p class="phase-desc">{format_inline_code(html.escape(phase["description"]))}</p>
 
             {"".join(files_html)}
+
+            {phase_artifacts_html}
 
             {"<div class='ai-notes-section'><h3>🤖 AI Observations <span class='flag-hint'>(click 🚩 to flag for discussion)</span></h3>" + ai_notes_html + "</div>" if ai_notes_html else ""}
 
@@ -595,11 +813,27 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
             </div>
 
             <div class="phase-nav">
-                {"<button onclick='goPhase(" + str(phase_num - 1) + ")' class='btn btn-secondary'>← Phase " + str(phase_num - 1) + "</button>" if i > 0 else "<div></div>"}
+                {"<button onclick='goPhase(" + str(phase_num - 1) + ")' class='btn btn-secondary'>← Phase " + str(phase_num - 1) + "</button>" if i > 0 else ("<button onclick='showContext()' class='btn btn-secondary'>← Context</button>" if has_context_tab else "<div></div>")}
                 {"<button onclick='goPhase(" + str(phase_num + 1) + ")' class='btn btn-primary'>Phase " + str(phase_num + 1) + " →</button>" if i < num_phases - 1 else "<button onclick='showSummary()' class='btn btn-primary'>View Summary →</button>"}
             </div>
         </div>
         ''')
+
+    # Build context tab HTML (top-level artifacts)
+    context_tab_html = ""
+    if has_context_tab:
+        ctx_artifacts_html = render_artifacts_section(top_artifacts, "ctx-artifact", heading="")
+        context_tab_html = f'''
+    <div class="context-tab" id="context-tab">
+        <h2>📚 Context & References</h2>
+        <p class="phase-desc">Supplemental materials to help understand this change — diagrams, related resources, and background context.</p>
+        {ctx_artifacts_html}
+        <div class="phase-nav">
+            <div></div>
+            <button onclick="goPhase(1)" class="btn btn-primary">Phase 1 \u2192</button>
+        </div>
+    </div>
+        '''
 
     # Build the phase nav tabs (with optional risk dot indicators)
     risk_dots = {
@@ -609,9 +843,11 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
         "low": "🟢",
     }
     tabs = []
+    if has_context_tab:
+        tabs.append('<button class="tab active" id="tab-context" onclick="showContext()">📚 Context</button>')
     for i, phase in enumerate(phases):
         phase_num = i + 1
-        active = "active" if i == 0 else ""
+        active = "active" if i == 0 and not has_context_tab else ""
         risk = phase.get("risk", "")
         dot = f' {risk_dots[risk]}' if risk in risk_dots else ""
         tabs.append(
@@ -761,6 +997,56 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
     .file-header:hover {{ background: rgba(255,255,255,0.06); }}
     .file-path {{ font-family: monospace; font-size: 0.9em; flex: 1; color: var(--accent); }}
     .file-stats {{ color: var(--text-muted); font-size: 0.85em; margin-right: 8px; }}
+    .btn-copy-code {{
+        background: none;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        color: var(--text-muted);
+        padding: 2px 8px;
+        cursor: pointer;
+        font-size: 0.82em;
+        white-space: nowrap;
+        transition: all 0.15s;
+        opacity: 0;
+        flex-shrink: 0;
+        margin-right: 4px;
+    }}
+    .file-header:hover .btn-copy-code {{ opacity: 0.6; }}
+    .btn-copy-code:hover {{
+        opacity: 1 !important;
+        color: var(--accent);
+        border-color: var(--accent);
+        background: rgba(88, 166, 255, 0.08);
+    }}
+    .btn-copy-code.copied {{
+        opacity: 1 !important;
+        color: var(--add-text) !important;
+        border-color: var(--add-text) !important;
+        background: rgba(86, 211, 100, 0.08) !important;
+    }}
+    /* Preview toggle button (markdown files) */
+    .btn-preview {{
+        background: rgba(163, 113, 247, 0.08);
+        border: 1px solid rgba(163, 113, 247, 0.3);
+        border-radius: 4px;
+        color: #a371f7;
+        padding: 2px 10px;
+        cursor: pointer;
+        font-size: 0.82em;
+        white-space: nowrap;
+        transition: all 0.15s;
+        flex-shrink: 0;
+        margin-right: 4px;
+    }}
+    .btn-preview:hover {{
+        background: rgba(163, 113, 247, 0.15);
+        border-color: #a371f7;
+    }}
+    .btn-preview-active {{
+        background: rgba(163, 113, 247, 0.15) !important;
+        border-color: #a371f7 !important;
+        color: #c9a0ff !important;
+    }}
     .toggle-hint {{ color: var(--text-muted); font-size: 0.8em; transition: transform 0.15s; }}
     .file-diff {{
         font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
@@ -771,9 +1057,87 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
         overflow-y: auto;
     }}
     .file-diff.collapsed {{ display: none; }}
+
+    /* Markdown rich preview pane */
+    .file-preview {{
+        padding: 20px 28px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+        font-size: 0.95em;
+        line-height: 1.7;
+        color: var(--text);
+        max-height: 700px;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }}
+    .file-preview h1 {{ font-size: 1.6em; margin: 0.8em 0 0.4em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border); }}
+    .file-preview h2 {{ font-size: 1.3em; margin: 0.8em 0 0.4em; padding-bottom: 0.25em; border-bottom: 1px solid var(--border); }}
+    .file-preview h3 {{ font-size: 1.1em; margin: 0.7em 0 0.3em; }}
+    .file-preview h4 {{ font-size: 1.0em; margin: 0.6em 0 0.3em; color: var(--text-muted); }}
+    .file-preview p {{ margin: 0.5em 0; }}
+    .file-preview ul, .file-preview ol {{ margin: 0.5em 0; padding-left: 2em; }}
+    .file-preview li {{ margin: 0.2em 0; }}
+    .file-preview li > ul, .file-preview li > ol {{ margin: 0.1em 0; }}
+    .file-preview code {{
+        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+        font-size: 0.88em;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(110, 118, 129, 0.2);
+        color: #e6edf3;
+    }}
+    .file-preview pre {{
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 12px 16px;
+        overflow-x: auto;
+        margin: 0.6em 0;
+    }}
+    .file-preview pre code {{
+        background: none;
+        padding: 0;
+        font-size: 0.85em;
+        line-height: 1.5;
+    }}
+    .file-preview blockquote {{
+        margin: 0.5em 0;
+        padding: 4px 16px;
+        border-left: 4px solid var(--accent);
+        color: var(--text-muted);
+        background: rgba(88, 166, 255, 0.04);
+        border-radius: 0 4px 4px 0;
+    }}
+    .file-preview blockquote p {{ margin: 0.3em 0; }}
+    .file-preview table {{
+        border-collapse: collapse;
+        margin: 0.6em 0;
+        width: auto;
+    }}
+    .file-preview th, .file-preview td {{
+        border: 1px solid var(--border);
+        padding: 6px 12px;
+        text-align: left;
+    }}
+    .file-preview th {{ background: rgba(255,255,255,0.04); font-weight: 600; }}
+    .file-preview a {{ color: var(--accent); text-decoration: none; }}
+    .file-preview a:hover {{ text-decoration: underline; }}
+    .file-preview hr {{ border: none; border-top: 1px solid var(--border); margin: 1em 0; }}
+    .file-preview img {{ max-width: 100%; border-radius: 4px; }}
+    .file-preview .preview-hunk-sep {{
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 0.8em;
+        font-style: italic;
+        margin: 1em 0;
+        padding: 4px;
+        border-top: 1px dashed var(--border);
+        border-bottom: 1px dashed var(--border);
+    }}
     .file-diff > div:not(.diff-line-row):not(.inline-comment-form):not(.inline-comment-saved):not(.diff-fold) {{ padding: 1px 16px; white-space: pre; }}
-    .diff-add {{ background: var(--add-bg); color: var(--add-text); }}
-    .diff-del {{ background: var(--del-bg); color: var(--del-text); }}
+    .diff-add {{ background: var(--add-bg); color: var(--text); }}
+    .diff-del {{ background: var(--del-bg); color: var(--text); }}
+    .diff-add .diff-prefix {{ color: var(--add-text); }}
+    .diff-del .diff-prefix {{ color: var(--del-text); }}
     .diff-hunk {{ background: var(--hunk-bg); color: var(--hunk-text); font-style: italic; padding-top: 8px !important; }}
     .diff-meta {{ color: var(--text-muted); font-weight: bold; }}
     .diff-ctx {{ color: var(--text-muted); }}
@@ -1043,6 +1407,22 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
     }}
     .ai-note-content {{ flex: 1; }}
     .ai-note-label {{ font-weight: 600; font-size: 0.85em; }}
+
+    /* Inline code in observations, artifact text, titles, and descriptions */
+    .ai-note-content code,
+    .artifact-content code,
+    .artifact-desc code,
+    .artifact-title code,
+    .phase-desc code,
+    .pr-desc code {{
+        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+        font-size: 0.88em;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(110, 118, 129, 0.2);
+        color: #e6edf3;
+        white-space: nowrap;
+    }}
     .flag-btn {{
         background: none;
         border: 1px solid transparent;
@@ -1224,6 +1604,105 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
         background: rgba(88, 166, 255, 0.05);
     }}
 
+    /* ── Artifacts (diagrams, references, notes) ───────────────────── */
+    .artifacts-section {{
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 12px;
+    }}
+    .artifacts-section h3 {{
+        font-size: 1em;
+        margin-bottom: 12px;
+    }}
+    .artifact-count {{
+        color: var(--text-muted);
+        font-size: 0.85em;
+        font-weight: normal;
+    }}
+    .artifact {{
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        border-radius: 6px;
+        background: rgba(255,255,255,0.02);
+        border: 1px solid var(--border);
+    }}
+    .artifact:last-child {{ margin-bottom: 0; }}
+    .artifact-header {{
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+    }}
+    .artifact-icon {{ font-size: 0.9em; flex-shrink: 0; }}
+    .artifact-title {{
+        font-weight: 600;
+        font-size: 0.93em;
+    }}
+    .artifact-link {{
+        color: var(--accent);
+        text-decoration: none;
+    }}
+    .artifact-link:hover {{ text-decoration: underline; }}
+    .artifact-desc {{
+        color: var(--text-muted);
+        font-size: 0.88em;
+        margin-top: 2px;
+        padding-left: 22px;
+    }}
+    .artifact-content {{
+        color: var(--text);
+        font-size: 0.9em;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }}
+
+    /* Mermaid diagram container */
+    .mermaid-container {{
+        background: rgba(0,0,0,0.2);
+        border-radius: 6px;
+        padding: 16px;
+        overflow-x: auto;
+        text-align: center;
+        margin-top: 4px;
+    }}
+    .mermaid-container svg {{
+        max-width: 100%;
+        height: auto;
+    }}
+    .mermaid-loading {{
+        color: var(--text-muted);
+        font-size: 0.88em;
+    }}
+
+    /* Mermaid error fallback */
+    .mermaid-container.mermaid-error {{
+        background: rgba(255, 107, 107, 0.05) !important;
+        border: 1px dashed rgba(255, 107, 107, 0.3) !important;
+        text-align: left !important;
+    }}
+    .mermaid-err-header {{
+        color: #ffa94d;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+        font-size: 0.85em;
+        margin-bottom: 8px;
+    }}
+    .mermaid-error code {{
+        display: block;
+        white-space: pre-wrap;
+        color: var(--text-muted);
+        font-size: 0.85em;
+        line-height: 1.5;
+    }}
+
+    /* Context tab (top-level artifacts) */
+    .context-tab {{
+        animation: fadeIn 0.2s ease;
+    }}
+    .context-tab h2 {{ margin-bottom: 16px; }}
+
     /* Comments */
     .comment-section {{ margin: 20px 0; }}
     .comment-section h3 {{ font-size: 1em; margin-bottom: 8px; }}
@@ -1400,32 +1879,8 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
     .diff-code .hljs-meta.prompt_ {{ color: #d2a8ff; }}
     .diff-code .hljs-section {{ color: #79c0ff; font-weight: bold; }}
 
-    /* Ensure token colors survive within add/del lines */
-    .diff-add .hljs-keyword,
-    .diff-add .hljs-selector-tag {{ color: #7ee787; }}
-    .diff-add .hljs-string,
-    .diff-add .hljs-regexp {{ color: #a5d6ff; }}
-    .diff-add .hljs-comment,
-    .diff-add .hljs-doctag {{ color: #7ee787; opacity: 0.7; font-style: italic; }}
-    .diff-add .hljs-title.function_,
-    .diff-add .hljs-title.function {{ color: #d2a8ff; }}
-    .diff-add .hljs-built_in,
-    .diff-add .hljs-type {{ color: #ffa657; }}
-    .diff-add .hljs-number,
-    .diff-add .hljs-literal {{ color: #a5d6ff; }}
-
-    .diff-del .hljs-keyword,
-    .diff-del .hljs-selector-tag {{ color: #ffa198; }}
-    .diff-del .hljs-string,
-    .diff-del .hljs-regexp {{ color: #ffa198; opacity: 0.85; }}
-    .diff-del .hljs-comment,
-    .diff-del .hljs-doctag {{ color: #ffa198; opacity: 0.6; font-style: italic; }}
-    .diff-del .hljs-title.function_,
-    .diff-del .hljs-title.function {{ color: #d2a8ff; opacity: 0.8; }}
-    .diff-del .hljs-built_in,
-    .diff-del .hljs-type {{ color: #ffa198; opacity: 0.8; }}
-    .diff-del .hljs-number,
-    .diff-del .hljs-literal {{ color: #ffa198; opacity: 0.8; }}
+    /* Add/del lines: syntax colors are inherited from base tokens above.
+       The green/red background plus the colored +/- prefix is enough signal. */
 
     /* ── Language picker ───────────────────────────────────────────── */
     .lang-picker-btn {{
@@ -1561,6 +2016,56 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/highlightjs-terraform/terraform.js"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({{
+    startOnLoad: false,
+    theme: 'dark',
+    themeVariables: {{
+      primaryColor: '#1c2433',
+      primaryTextColor: '#e6edf3',
+      primaryBorderColor: '#30363d',
+      lineColor: '#58a6ff',
+      secondaryColor: '#161b22',
+      tertiaryColor: '#0d1117',
+      fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif',
+      fontSize: '14px',
+    }}
+  }});
+  // Render mermaid diagrams using the render() API for full control.
+  // Source is base64-encoded in data-mermaid-src to avoid HTML entity issues.
+  // Only renders visible containers; hidden ones are rendered when their
+  // tab/phase becomes visible via goPhase() or showContext().
+  let mermaidCounter = 0;
+  window.renderMermaid = async function() {{
+    const containers = document.querySelectorAll('.mermaid-container:not([data-rendered])');
+    for (const el of containers) {{
+      if (el.offsetParent === null) continue;
+      el.setAttribute('data-rendered', 'true');
+      const encoded = el.getAttribute('data-mermaid-src');
+      if (!encoded) continue;
+      let src;
+      try {{
+        src = atob(encoded);
+      }} catch(e) {{
+        el.innerHTML = '<span style="color:#ffa94d">\u26a0\ufe0f Failed to decode diagram source</span>';
+        continue;
+      }}
+      try {{
+        const {{ svg }} = await mermaid.render('mermaid-id-' + (mermaidCounter++), src);
+        el.innerHTML = svg;
+      }} catch(e) {{
+        console.warn('Mermaid render error:', e);
+        el.classList.add('mermaid-error');
+        el.innerHTML =
+          '<div class="mermaid-err-header">\u26a0\ufe0f Diagram syntax error \u2014 showing raw source</div>' +
+          '<code>' + src.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</code>';
+      }}
+    }}
+  }};
+  // Initial render
+  window.renderMermaid();
+</script>
 </head>
 <body>
 <div class="container">
@@ -1573,7 +2078,7 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
             <span style="color:var(--del-text)">−{pr["deletions"]}</span>
             <span>{pr["changed_files"]} files</span>
         </div>
-        <div class="pr-desc">{html.escape(pr["description"])}</div>
+        <div class="pr-desc">{format_inline_code(html.escape(pr["description"]))}</div>
     </div>
 
     {impact_html}
@@ -1581,6 +2086,8 @@ def generate_html(plan: dict, file_diffs: dict[str, str]) -> str:
     <div class="tabs" id="tabs">
         {"".join(tabs)}
     </div>
+
+    {context_tab_html}
 
     {"".join(phase_sections)}
 
@@ -1683,7 +2190,7 @@ function highlightDiffs() {{
                 const prefix = text.length > 0 ? text[0] : '';
                 // Re-inject: escaped prefix + highlighted code
                 const escapedPrefix = prefix.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-                el.innerHTML = escapedPrefix + hLines[idx];
+                el.innerHTML = '<span class="diff-prefix">' + escapedPrefix + '</span>' + hLines[idx];
             }}
         }});
         fileDiff.dataset.highlighted = 'true';
@@ -1754,7 +2261,7 @@ function highlightSingleFile(fileDiff, lang) {{
             const text = el.textContent;
             const prefix = text.length > 0 ? text[0] : '';
             const escapedPrefix = prefix.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            el.innerHTML = escapedPrefix + hLines[idx];
+            el.innerHTML = '<span class="diff-prefix">' + escapedPrefix + '</span>' + hLines[idx];
         }}
     }});
     fileDiff.dataset.lang = lang;
@@ -2055,6 +2562,130 @@ highlightDiffs();
 markUnhighlightedFiles();
 loadCustomMappings();
 
+// ── Copy code ─────────────────────────────────────────────────────────────
+
+function copyFileCode(btn) {{
+    const fileBlock = btn.closest('.file-block');
+    if (!fileBlock) return;
+    const fileDiff = fileBlock.querySelector('.file-diff');
+    if (!fileDiff) return;
+    const lines = [];
+    fileDiff.querySelectorAll('.diff-line-row').forEach(row => {{
+        // Skip deleted lines — we want the new-file version
+        if (row.classList.contains('diff-del')) return;
+        const code = row.querySelector('.diff-code');
+        if (!code) return;
+        const text = code.textContent;
+        // Strip the diff prefix character (+, space, or context)
+        lines.push(text.length > 0 ? text.substring(1) : '');
+    }});
+    const text = lines.join('\\n');
+    navigator.clipboard.writeText(text).then(() => {{
+        btn.classList.add('copied');
+        const orig = btn.textContent;
+        btn.textContent = '✓ Copied';
+        setTimeout(() => {{
+            btn.textContent = orig;
+            btn.classList.remove('copied');
+        }}, 1500);
+    }});
+}}
+
+// ── File collapse (generalized for preview support) ───────────────────────
+
+function toggleFileCollapse(header) {{
+    const block = header.closest('.file-block');
+    const diff = block.querySelector('.file-diff');
+    const preview = block.querySelector('.file-preview');
+    // If preview is active (visible), toggle the preview container
+    if (preview && preview.style.display !== 'none') {{
+        preview.classList.toggle('collapsed');
+    }} else {{
+        diff.classList.toggle('collapsed');
+    }}
+}}
+
+// ── Markdown Preview ──────────────────────────────────────────────────────
+
+let markedLoaded = false;
+function ensureMarkedLoaded() {{
+    if (markedLoaded && typeof marked !== 'undefined') return Promise.resolve();
+    return new Promise((resolve, reject) => {{
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
+        script.onload = () => {{ markedLoaded = true; resolve(); }};
+        script.onerror = () => reject(new Error('Failed to load marked.js'));
+        document.head.appendChild(script);
+    }});
+}}
+
+function extractNewFileContent(fileDiff) {{
+    // Extracts the new-file content: context lines + additions, skip deletions.
+    // Groups by hunk and inserts separators between non-contiguous hunks.
+    const chunks = [];
+    let currentChunk = [];
+    let lastNewLine = null;
+    let inContent = false;
+
+    fileDiff.querySelectorAll('.diff-line-row, .diff-hunk').forEach(el => {{
+        if (el.classList.contains('diff-hunk')) {{
+            // Start a new chunk for each hunk
+            if (currentChunk.length > 0) {{
+                chunks.push(currentChunk.join('\n'));
+                currentChunk = [];
+            }}
+            inContent = true;
+            return;
+        }}
+        if (!inContent) return;
+        if (el.classList.contains('diff-del')) return; // skip deleted lines
+        const code = el.querySelector('.diff-code');
+        if (!code) return;
+        const text = code.textContent;
+        currentChunk.push(text.length > 0 ? text.substring(1) : '');
+    }});
+    if (currentChunk.length > 0) chunks.push(currentChunk.join('\n'));
+    return chunks;
+}}
+
+async function toggleMarkdownPreview(btn) {{
+    const block = btn.closest('.file-block');
+    const diff = block.querySelector('.file-diff');
+    const preview = block.querySelector('.file-preview');
+    if (!preview) return;
+
+    if (preview.style.display !== 'none') {{
+        // Switch back to diff view
+        preview.style.display = 'none';
+        diff.style.display = '';
+        diff.classList.remove('collapsed');
+        btn.textContent = '👁️ Preview';
+        btn.classList.remove('btn-preview-active');
+    }} else {{
+        // Switch to preview
+        try {{
+            btn.textContent = '⏳ Loading...';
+            await ensureMarkedLoaded();
+            const chunks = extractNewFileContent(diff);
+            let renderedHtml = '';
+            for (let i = 0; i < chunks.length; i++) {{
+                if (i > 0) {{
+                    renderedHtml += '<div class="preview-hunk-sep">⋯ non-contiguous section ⋯</div>';
+                }}
+                renderedHtml += marked.parse(chunks[i]);
+            }}
+            preview.innerHTML = renderedHtml;
+            diff.style.display = 'none';
+            preview.style.display = '';
+            btn.textContent = '📝 Diff';
+            btn.classList.add('btn-preview-active');
+        }} catch(e) {{
+            console.warn('Markdown preview error:', e);
+            btn.textContent = '👁️ Preview';
+        }}
+    }}
+}}
+
 // ── Flagging ──────────────────────────────────────────────────────────────
 
 function toggleFlag(noteId) {{
@@ -2246,23 +2877,44 @@ function stopAndDiscuss() {{
 
 // ── Phase navigation ──────────────────────────────────────────────────────
 
-function goPhase(n) {{
-    if (n < 1 || n > NUM_PHASES) return;
-    for (let i = 1; i <= NUM_PHASES; i++) {{
-        document.getElementById('phase-' + i).style.display = i === n ? '' : 'none';
-        document.getElementById('tab-' + i).classList.toggle('active', i === n);
-    }}
-    document.getElementById('summary').style.display = 'none';
-    document.getElementById('tab-summary').classList.remove('active');
-    currentPhase = n;
-    window.scrollTo(0, 0);
-}}
+const HAS_CONTEXT_TAB = !!document.getElementById('context-tab');
 
-function showSummary() {{
+function hideAllViews() {{
     for (let i = 1; i <= NUM_PHASES; i++) {{
         document.getElementById('phase-' + i).style.display = 'none';
         document.getElementById('tab-' + i).classList.remove('active');
     }}
+    document.getElementById('summary').style.display = 'none';
+    document.getElementById('tab-summary').classList.remove('active');
+    if (HAS_CONTEXT_TAB) {{
+        document.getElementById('context-tab').style.display = 'none';
+        document.getElementById('tab-context').classList.remove('active');
+    }}
+}}
+
+function goPhase(n) {{
+    if (n < 1 || n > NUM_PHASES) return;
+    hideAllViews();
+    document.getElementById('phase-' + n).style.display = '';
+    document.getElementById('tab-' + n).classList.add('active');
+    currentPhase = n;
+    window.scrollTo(0, 0);
+    // Render any mermaid diagrams in this phase (they need to be visible)
+    if (window.renderMermaid) window.renderMermaid();
+}}
+
+function showContext() {{
+    if (!HAS_CONTEXT_TAB) return;
+    hideAllViews();
+    document.getElementById('context-tab').style.display = '';
+    document.getElementById('tab-context').classList.add('active');
+    window.scrollTo(0, 0);
+    // Re-render mermaid diagrams (may have been hidden when first rendered)
+    if (window.renderMermaid) window.renderMermaid();
+}}
+
+function showSummary() {{
+    hideAllViews();
     document.getElementById('summary').style.display = '';
     document.getElementById('tab-summary').classList.add('active');
 
@@ -2917,12 +3569,14 @@ document.addEventListener('keydown', (e) => {{
         if (overlay && overlay.style.display === 'flex') {{ closeLangPicker(); return; }}
     }}
     if (e.key === 'ArrowRight') {{
-        if (currentPhase < NUM_PHASES) goPhase(currentPhase + 1);
+        if (HAS_CONTEXT_TAB && document.getElementById('context-tab').style.display !== 'none') goPhase(1);
+        else if (currentPhase < NUM_PHASES) goPhase(currentPhase + 1);
         else showSummary();
     }}
     if (e.key === 'ArrowLeft') {{
         if (document.getElementById('summary').style.display !== 'none') goPhase(NUM_PHASES);
         else if (currentPhase > 1) goPhase(currentPhase - 1);
+        else if (HAS_CONTEXT_TAB) showContext();
     }}
 }});
 
@@ -2937,6 +3591,8 @@ def main():
     parser.add_argument("--diff", required=True, help="Path to unified diff file")
     parser.add_argument("--plan", required=True, help="Path to review plan JSON")
     parser.add_argument("--output", required=True, help="Output HTML file path")
+    parser.add_argument("--repo-dir", help="Git repo root — used to fetch content of new files missing from the diff")
+    parser.add_argument("--head-sha", help="PR head commit SHA — combined with --repo-dir for exact file content")
     args = parser.parse_args()
 
     with open(args.diff) as f:
@@ -2946,7 +3602,8 @@ def main():
         plan = json.load(f)
 
     file_diffs = parse_diff(diff_text)
-    html_content = generate_html(plan, file_diffs)
+    html_content = generate_html(plan, file_diffs,
+                                 repo_dir=args.repo_dir, head_sha=args.head_sha)
 
     with open(args.output, "w") as f:
         f.write(html_content)

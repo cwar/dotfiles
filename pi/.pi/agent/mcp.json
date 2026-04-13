@@ -1,0 +1,76 @@
+{
+  "mcpServers": {
+    "MCP-Explorer": {
+      "url": "https://mcp-gateway.spotify.net/mcp-explorer-mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "callbackPort": 19876,
+        "callbackTimeoutSeconds": 120
+      }
+    },
+    "code-search-mcp": {
+      "url": "https://mcp-gateway.spotify.net/code-search-mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "callbackPort": 0,
+        "callbackTimeoutSeconds": 120
+      }
+    },
+    "honk-coding-agent": {
+      "url": "https://mcp-gateway.spotify.net/honk-coding-agent",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "callbackPort": 0,
+        "callbackTimeoutSeconds": 120
+      }
+    },
+    "atlassian-mcp": {
+      "url": "https://mcp-gateway.spotify.net/atlassian-mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "callbackPort": 0,
+        "callbackTimeoutSeconds": 120
+      }
+    },
+    "google-calendar-mcp": {
+      "url": "https://mcp-gateway.spotify.net/google-calendar-mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "callbackPort": 0,
+        "callbackTimeoutSeconds": 120
+      }
+    },
+    "bigquery-mcp": {
+      "url": "https://mcp-gateway.spotify.net/bigquery-mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "callbackPort": 0,
+        "callbackTimeoutSeconds": 120
+      }
+    },
+    "bandmanager-mcp": {
+      "url": "https://mcp-gateway.spotify.net/bandmanager-mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "callbackPort": 0,
+        "callbackTimeoutSeconds": 120
+      }
+    },
+    "slack-mcp": {
+      "url": "https://mcp-gateway.spotify.net/slack-mcp",
+      "transport": "streamable-http",
+      "auth": {
+        "type": "oauth",
+        "callbackPort": 0,
+        "callbackTimeoutSeconds": 120
+      }
+    }
+  }
+}

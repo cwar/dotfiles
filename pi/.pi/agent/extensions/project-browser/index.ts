@@ -19,15 +19,23 @@
  *   /projects <query>   — Open browser pre-filtered by query
  *
  * Shortcut: Alt+P — Quick-open the project browser
+ *
+ * Actions:
+ *   /     — Enter filter mode (type to search, esc/enter to exit)
+ *   enter — Project details
+ *   p     — Open new pi session in project directory
+ *   c     — Copy project path
+ *   t     — Open terminal at project path
+ *   esc   — Close browser
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { type SelectItem, SelectList, truncateToWidth } from "@mariozechner/pi-tui";
 import { spawn } from "node:child_process";
 import { readdir, stat, readFile } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
 import { homedir } from "node:os";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -677,6 +685,7 @@ function renderProjectBrowser(
 	return ctx.ui.custom(
 		(tui: any, theme: any, _kb: any, done: (result: string | null) => void) => {
 			let filterText = initialFilter || "";
+			let filterMode = filterText.length > 0;
 			let cursorVisible = true;
 			let cursorTimer: ReturnType<typeof setInterval>;
 
@@ -796,10 +805,14 @@ function renderProjectBrowser(
 					lines.push(wrapFull(` ${title}`, iw));
 
 					// Filter input
-					const cursor = cursorVisible ? "▌" : " ";
-					const filterLine = filterText
-						? `${DIM}/${RST} ${WHITE}${filterText}${RST}${DIM}${cursor}${RST}`
-						: `${DIM}/ type to filter${cursor}${RST}`;
+					const cursor = filterMode && cursorVisible ? "▌" : " ";
+					const filterLine = filterMode
+						? (filterText
+							? `${DIM}/${RST} ${WHITE}${filterText}${RST}${DIM}${cursor}${RST}`
+							: `${DIM}/${RST}${DIM}${cursor}${RST}`)
+						: (filterText
+							? `${DIM}/${RST} ${WHITE}${filterText}${RST} ${DIM}(/ to edit, esc clears)${RST}`
+							: `${DIM}/ to filter${RST}`);
 					lines.push(wrapFull(` ${filterLine}`, iw));
 
 					// Separator
@@ -813,7 +826,7 @@ function renderProjectBrowser(
 
 					// Bottom help
 					lines.push(border(`├${"─".repeat(iw)}┤`));
-					const help = `${DIM}enter${RST} open  ${DIM}c${RST} copy path  ${DIM}t${RST} terminal  ${DIM}esc${RST} close`;
+					const help = `${DIM}/${RST} filter  ${DIM}enter${RST} details  ${DIM}p${RST} pi  ${DIM}c${RST} copy  ${DIM}t${RST} term  ${DIM}esc${RST} close`;
 					lines.push(wrapFull(` ${help}`, iw));
 					lines.push(border(`╰${"─".repeat(iw)}╯`));
 
@@ -821,8 +834,73 @@ function renderProjectBrowser(
 				},
 				invalidate: () => selectList.invalidate(),
 				handleInput: (data: string) => {
-					// 'c' — copy path (only when not typing in filter)
-					if (data === "c" && !filterText) {
+					// ── Filter mode input ──────────────────────────
+					if (filterMode) {
+						// Escape — exit filter mode (clear filter if empty, else just exit mode)
+						if (data === "\x1b") {
+							if (filterText.length === 0) {
+								done(null); // close browser
+								return;
+							}
+							filterText = "";
+							filterMode = false;
+							rebuildList();
+							tui.requestRender();
+							return;
+						}
+
+						// Enter — accept filter and return to normal mode
+						if (data === "\r" || data === "\n") {
+							filterMode = false;
+							tui.requestRender();
+							return;
+						}
+
+						// Backspace
+						if (data === "\x7f" || data === "\b") {
+							if (filterText.length > 0) {
+								filterText = filterText.slice(0, -1);
+								rebuildList();
+							} else {
+								filterMode = false; // backspace on empty exits filter mode
+							}
+							tui.requestRender();
+							return;
+						}
+
+						// Ctrl+U — clear filter
+						if (data === "\x15") {
+							filterText = "";
+							rebuildList();
+							tui.requestRender();
+							return;
+						}
+
+						// Printable chars — append to filter
+						if (data.length === 1 && data >= " " && data <= "~") {
+							filterText += data;
+							rebuildList();
+							tui.requestRender();
+							return;
+						}
+
+						// Arrow keys still work in filter mode for list navigation
+						selectList.handleInput(data);
+						tui.requestRender();
+						return;
+					}
+
+					// ── Normal mode (hotkeys) ──────────────────────
+
+					// '/' — enter filter mode
+					if (data === "/") {
+						filterMode = true;
+						tui.requestRender();
+						return;
+					}
+
+					// 'c' — copy path
+					if (data === "c") {
 						const sel = selectList.getSelectedItem();
 						if (sel) {
 							done(`copy:${sel.value}`);
@@ -830,8 +908,8 @@ function renderProjectBrowser(
 						}
 					}
 
-					// 't' — open terminal (only when not typing in filter)
-					if (data === "t" && !filterText) {
+					// 't' — open terminal
+					if (data === "t") {
 						const sel = selectList.getSelectedItem();
 						if (sel) {
 							done(`terminal:${sel.value}`);
@@ -839,8 +917,8 @@ function renderProjectBrowser(
 						}
 					}
 
-					// 'd' — details (only when not typing in filter)
-					if (data === "d" && !filterText) {
+					// 'd' — details
+					if (data === "d") {
 						const sel = selectList.getSelectedItem();
 						if (sel) {
 							done(`details:${sel.value}`);
@@ -848,30 +926,13 @@ function renderProjectBrowser(
 						}
 					}
 
-					// Typing filter
-					if (data.length === 1 && data >= " " && data <= "~") {
-						filterText += data;
-						rebuildList();
-						tui.requestRender();
-						return;
-					}
-
-					// Backspace
-					if (data === "\x7f" || data === "\b") {
-						if (filterText.length > 0) {
-							filterText = filterText.slice(0, -1);
-							rebuildList();
-							tui.requestRender();
+					// 'p' — open pi session
+					if (data === "p") {
+						const sel = selectList.getSelectedItem();
+						if (sel) {
+							done(`pi:${sel.value}`);
 							return;
 						}
-					}
-
-					// Ctrl+U — clear filter
-					if (data === "\x15") {
-						filterText = "";
-						rebuildList();
-						tui.requestRender();
-						return;
 					}
 
 					selectList.handleInput(data);
@@ -970,7 +1031,7 @@ async function showProjectDetails(
 					}
 
 					lines.push(border(`├${"─".repeat(iw)}┤`));
-					lines.push(wrap(`${DIM}enter${RST} back  ${DIM}c${RST} copy  ${DIM}t${RST} terminal  ${DIM}esc${RST} close`, iw));
+					lines.push(wrap(`${DIM}enter${RST} back  ${DIM}p${RST} pi session  ${DIM}c${RST} copy  ${DIM}t${RST} terminal  ${DIM}esc${RST} close`, iw));
 					lines.push(border(`╰${"─".repeat(iw)}╯`));
 
 					return lines;
@@ -985,6 +1046,8 @@ async function showProjectDetails(
 						done(`copy:${project.path}`);
 					} else if (data === "t") {
 						done(`terminal:${project.path}`);
+					} else if (data === "p") {
+						done(`pi:${project.path}`);
 					}
 				},
 			};
@@ -1058,12 +1121,21 @@ export default function projectBrowser(pi: ExtensionAPI): void {
 				} else if (detailResult.startsWith("terminal:")) {
 					await handleTerminal(detailResult.slice(9), ctx);
 					keepBrowsing = false;
+				} else if (detailResult.startsWith("pi:")) {
+					await handlePiSession(project, ctx);
+					keepBrowsing = false;
 				}
 			} else if (result.startsWith("copy:")) {
 				await handleCopy(result.slice(5), ctx);
 				keepBrowsing = false;
 			} else if (result.startsWith("terminal:")) {
 				await handleTerminal(result.slice(9), ctx);
+				keepBrowsing = false;
+			} else if (result.startsWith("pi:")) {
+				const piProject = projects.find((p) => p.path === result.slice(3));
+				if (piProject) {
+					await handlePiSession(piProject, ctx);
+				}
 				keepBrowsing = false;
 			}
 		}
@@ -1074,15 +1146,76 @@ export default function projectBrowser(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Copied: ${shortPath(path)}`, "info");
 	}
 
+	/** Resolve a project path to a directory (file-based projects use their parent). */
+	function resolveDir(path: string): string {
+		try {
+			return statSync(path).isFile() ? dirname(path) : path;
+		} catch {
+			return path;
+		}
+	}
+
 	async function handleTerminal(path: string, ctx: ExtensionCommandContext): Promise<void> {
 		// Open a new terminal window at the project path
 		const terminal = process.env.TERMINAL || "ghostty";
+		const dir = resolveDir(path);
 		spawn(terminal, [], {
-			cwd: path,
+			cwd: dir,
 			detached: true,
 			stdio: "ignore",
 		}).unref();
-		ctx.ui.notify(`Terminal opened: ${shortPath(path)}`, "info");
+		ctx.ui.notify(`Terminal opened: ${shortPath(dir)}`, "info");
+	}
+
+	/** Build a system prompt context blurb describing the project. */
+	function buildProjectContext(p: Project): string {
+		const lines: string[] = [
+			`## Project Context`,
+			``,
+			`This session was opened from the pi project browser to work on **${p.name}**.`,
+			`- Path: ${p.path}`,
+			`- Category: ${p.category}`,
+		];
+
+		if (p.language) lines.push(`- Language: ${p.language}`);
+
+		if (p.git) {
+			const parts: string[] = [`branch: ${p.git.branch}`];
+			if (p.git.dirty > 0) parts.push(`${p.git.dirty} dirty files`);
+			if (p.git.ahead > 0) parts.push(`${p.git.ahead} unpushed commits`);
+			if (p.git.remote) parts.push(`remote: ${shortRemote(p.git.remote)}`);
+			lines.push(`- Git: ${parts.join(", ")}`);
+		}
+
+		if (p.sessions > 0) lines.push(`- Previous pi sessions: ${p.sessions}`);
+		if (p.description) lines.push(`- ${p.description}`);
+
+		lines.push("");
+		lines.push("Focus your assistance on this project. All user questions and requests are about this project.");
+
+		// For file-based projects, hint that the file IS the project
+		try {
+			if (statSync(p.path).isFile()) {
+				lines.push(`This is a single-file project. The file at ${p.path} is the primary artifact — read it when the user asks about the project.`);
+			}
+		} catch { /* ignore */ }
+
+		return lines.join("\n");
+	}
+
+	async function handlePiSession(project: Project, ctx: ExtensionCommandContext): Promise<void> {
+		// Open a new terminal running pi in the project directory.
+		// --append-system-prompt injects project context so the agent knows what it's working on.
+		const terminal = process.env.TERMINAL || "ghostty";
+		const dir = resolveDir(project.path);
+		const context = buildProjectContext(project);
+
+		spawn(terminal, ["-e", "pi", "--append-system-prompt", context], {
+			cwd: dir,
+			detached: true,
+			stdio: "ignore",
+		}).unref();
+		ctx.ui.notify(`Pi session: ${project.name}`, "info");
 	}
 
 	// ── Command ──────────────────────────────────────────────────────

@@ -1,0 +1,165 @@
+---
+tags: [ editor, nvim, lazyvim ]
+---
+# Modes
+i               Insert before cursor
+a               Insert after cursor
+o / O           New line below / above
+v               Visual mode (characters)
+V               Visual line mode
+Ctrl-v          Visual block mode (columns)
+Esc             Back to normal mode
+:               Command mode
+
+# Movement - basic
+h / j / k / l   Left / down / up / right
+w / b           Next / previous word
+e               End of word
+0               Start of line
+^               First non-blank character
+$               End of line
+gg              Top of file
+G               Bottom of file
+
+# Movement - advanced
+Ctrl-d / Ctrl-u   Half page down / up
+{ / }             Previous / next paragraph
+%                 Jump to matching bracket
+fa              Jump to next 'a' on line (any char)
+ta              Jump to before next 'a' on line
+;               Repeat last f/t motion
+* / #           Search word under cursor forward / backward
+
+# Editing
+x               Delete character
+dd              Delete line
+D               Delete to end of line
+cc              Change line (delete + insert)
+C               Change to end of line
+yy              Yank (copy) line
+p / P           Paste after / before cursor
+u               Undo
+Ctrl-r          Redo
+.               Repeat last change
+J               Join line below to current
+>> / <<         Indent / dedent line
+
+# Operators (combine with motions)
+dw              Delete word
+d$              Delete to end of line
+cw              Change word
+ci"             Change inside double quotes
+ci(             Change inside parentheses
+yap             Yank around paragraph
+
+# Text Objects (use with d, c, y, etc)
+iw / aw         Inner / around word
+i" / a"         Inner / around double quotes
+i' / a'         Inner / around single quotes
+i( / a(         Inner / around parentheses
+i{ / a{         Inner / around braces
+i[ / a[         Inner / around brackets
+ip / ap         Inner / around paragraph
+
+# Search and Replace
+/pattern        Search forward
+?pattern        Search backward
+n / N           Next / previous match
+:s/old/new/     Replace first on line
+:s/old/new/g    Replace all on line
+:%s/old/new/g   Replace all in file
+:%s/old/new/gc  Replace all with confirm
+:noh            Clear search highlighting
+
+# Registers and clipboard
+"+y             Yank to system clipboard
+"+p             Paste from system clipboard
+
+# Macros
+qa              Start recording macro to register a
+q               Stop recording
+@a              Play macro a
+@@              Replay last macro
+
+# Windows
+Ctrl-w s        Split horizontal
+Ctrl-w v        Split vertical
+Ctrl-w h/j/k/l Navigate between windows
+Ctrl-w q        Close window
+Ctrl-w =        Equalize window sizes
+
+# LazyVim - leader key is Space
+
+# LazyVim - find (telescope)
+Space ff        Find files
+Space fg        Live grep (search in files)
+Space fb        Find buffers
+Space fr        Recent files
+Space Space     Find files (alias)
+
+# LazyVim - buffers
+Shift-h         Previous buffer
+Shift-l         Next buffer
+Space bd        Delete buffer
+Space bo        Delete other buffers
+
+# LazyVim - file explorer (neo-tree)
+Space e         Toggle file explorer
+# Inside neo-tree:
+#   a           Add file/directory (end with / for dir)
+#   d           Delete
+#   r           Rename
+#   Enter       Open file
+
+# LazyVim - code / LSP
+gd              Go to definition
+gr              Go to references
+gI              Go to implementation
+gy              Go to type definition
+K               Hover documentation
+Space ca        Code actions
+Space cr        Rename symbol
+Space cd        Line diagnostics
+]d / [d         Next / previous diagnostic
+Space cf        Format file
+
+# LazyVim - terminal
+Ctrl-/          Toggle terminal
+
+# LazyVim - git
+Space gg        Lazygit
+Space gb        Git blame line
+]h / [h         Next / previous hunk
+Space ghp       Preview hunk
+Space ghs       Stage hunk
+Space ghr       Reset hunk
+
+# LazyVim - UI toggles
+Space un        Dismiss notifications
+Space ul        Toggle line numbers
+Space uw        Toggle word wrap
+Space ud        Toggle diagnostics
+
+# LazyVim - help
+Space ?         Show all keymaps (which-key)
+
+# Data monorepo plugins
+# conform.nvim - auto formats on save:
+#   BUILD / .bzl files -> buildifier
+#   .py files -> ruff
+# starlark.vim - syntax highlighting for BUILD / .bzl / .star
+# yaml-companion - :YAMLCompanion to switch schema for K8s yamls
+# treesitter grammars: starlark, python, proto, yaml, java
+
+# Commands
+:w              Save
+:q              Quit
+:wq             Save and quit
+:q!             Quit without saving
+:wa             Save all
+:e file         Open file
+:vs file        Open in vertical split
+:Lazy           Plugin manager
+:Mason          LSP/formatter installer
+:TSInstall lang Install treesitter grammar
+:checkhealth    Diagnose config issues
