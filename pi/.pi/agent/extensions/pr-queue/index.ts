@@ -273,11 +273,22 @@ function buildItems(prs: PrInfo[]): PrSelectItem[] {
 export default function prQueue(pi: ExtensionAPI) {
 
   function launchReview(pr: PrInfo, ctx: any): void {
-    // Use sendUserMessage so the prompt is delivered directly to the agent
-    // and always triggers a turn. setEditorText was unreliable — it would
-    // sometimes leave the editor empty after the overlay closed.
-    pi.sendUserMessage(`review ${pr.url}`);
-    ctx.ui.notify(`Launching review: PR #${pr.number}`, "info");
+    const prompt = `review ${pr.url}`;
+    try {
+      // sendUserMessage throws if the agent is streaming and no deliverAs
+      // is passed — so pick the right mode based on idleness.
+      if (ctx.isIdle && ctx.isIdle()) {
+        pi.sendUserMessage(prompt);
+      } else {
+        pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+      }
+      ctx.ui.notify(`Launching review: PR #${pr.number}`, "info");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`Failed to launch review: ${msg}`, "warning");
+      // Fallback: at least populate the editor so the user can submit manually
+      ctx.ui.setEditorText(prompt);
+    }
   }
 
   function advanceQueue(ctx: any): void {
