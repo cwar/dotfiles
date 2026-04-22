@@ -273,11 +273,13 @@ function buildItems(prs: PrInfo[]): PrSelectItem[] {
 export default function prQueue(pi: ExtensionAPI) {
 
   function launchReview(pr: PrInfo, ctx: any): void {
+    // DIAGNOSTIC v3 — if you don't see THIS toast, pi did not reload the extension.
+    ctx.ui.notify(`[pr-queue v3] launchReview entered for PR #${pr.number}`, "info");
     const prompt = `review ${pr.url}`;
+    const idle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
+    ctx.ui.notify(`[pr-queue v3] isIdle=${idle}, has sendUserMessage=${typeof pi.sendUserMessage}`, "info");
     try {
-      // sendUserMessage throws if the agent is streaming and no deliverAs
-      // is passed — so pick the right mode based on idleness.
-      if (ctx.isIdle && ctx.isIdle()) {
+      if (idle) {
         pi.sendUserMessage(prompt);
       } else {
         pi.sendUserMessage(prompt, { deliverAs: "followUp" });
@@ -285,9 +287,13 @@ export default function prQueue(pi: ExtensionAPI) {
       ctx.ui.notify(`Launching review: PR #${pr.number}`, "info");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      ctx.ui.notify(`Failed to launch review: ${msg}`, "warning");
+      ctx.ui.notify(`[pr-queue v3] sendUserMessage threw: ${msg}`, "warning");
       // Fallback: at least populate the editor so the user can submit manually
-      ctx.ui.setEditorText(prompt);
+      try {
+        ctx.ui.setEditorText(prompt);
+      } catch (e2) {
+        ctx.ui.notify(`[pr-queue v3] setEditorText also failed: ${e2}`, "warning");
+      }
     }
   }
 

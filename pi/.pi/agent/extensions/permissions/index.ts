@@ -276,6 +276,10 @@ function summarizeEdit(
 const DIFF_LINES_PER_HUNK = 12;
 /** Context lines to show around each edit from the original file. */
 const CONTEXT_LINES = 3;
+/** Minimum unchanged context required before we try inline highlighting. */
+const MIN_INLINE_CONTEXT = 4;
+/** Avoid noisy inline diffs when lines are wildly different in length. */
+const MAX_INLINE_LENGTH_DELTA = 80;
 
 /**
  * Try to locate `needle` in `haystack` (the file lines) and return its
@@ -315,6 +319,68 @@ function readFileLines(filePath: string, cwd?: string): string[] {
  * Shows context lines from the original file around the change,
  * with removed lines (red) and added lines (green).
  */
+function sharedPrefixLength(a: string, b: string): number {
+	const limit = Math.min(a.length, b.length);
+	let i = 0;
+	while (i < limit && a[i] === b[i]) i++;
+	return i;
+}
+
+function sharedSuffixLength(a: string, b: string, prefixLen: number): number {
+	const max = Math.min(a.length, b.length) - prefixLen;
+	let i = 0;
+	while (
+		i < max &&
+		a[a.length - 1 - i] === b[b.length - 1 - i]
+	) {
+		i++;
+	}
+	return i;
+}
+
+function shouldInlineDiff(oldLine: string, newLine: string): boolean {
+	if (!oldLine || !newLine || oldLine === newLine) return false;
+	if (Math.abs(oldLine.length - newLine.length) > MAX_INLINE_LENGTH_DELTA) {
+		return false;
+	}
+
+	const prefixLen = sharedPrefixLength(oldLine, newLine);
+	const suffixLen = sharedSuffixLength(oldLine, newLine, prefixLen);
+	const shared = prefixLen + suffixLen;
+	return shared >= MIN_INLINE_CONTEXT;
+}
+
+function renderInlineChangedLine(
+	lineNumber: string,
+	prefix: "-" | "+",
+	line: string,
+	otherLine: string,
+	width: number,
+	theme: any,
+): string {
+	const gutterColor = prefix === "-" ? "toolDiffRemoved" : "toolDiffAdded";
+	const changedColor = prefix === "-" ? "error" : "success";
+	const prefixLen = sharedPrefixLength(line, otherLine);
+	const suffixLen = sharedSuffixLength(line, otherLine, prefixLen);
+	const middleEnd = line.length - suffixLen;
+
+	const unchangedStart = line.slice(0, prefixLen);
+	const changed = line.slice(prefixLen, middleEnd);
+	const unchangedEnd = line.slice(middleEnd);
+	const markedChanged = `[[${changed || "∅"}]]`;
+	const highlightedChanged = theme.underline(
+		theme.bold(theme.fg(changedColor, markedChanged)),
+	);
+
+	return truncateToWidth(
+		theme.fg(gutterColor, `  ${lineNumber} │${prefix}`) +
+			theme.fg(gutterColor, ` ${unchangedStart}`) +
+			highlightedChanged +
+			theme.fg(gutterColor, unchangedEnd),
+		width,
+	);
+}
+
 function buildHunkPreview(
 	fileLines: string[],
 	oldText: string,
@@ -363,9 +429,60 @@ function buildHunkPreview(
 			emitted++;
 		}
 
-		// Removed lines
+		// Removed/added lines, with inline highlighting for similar pairs
 		const oldSlice = oldLines.slice(0, DIFF_LINES_PER_HUNK);
-		for (let i = 0; i < oldSlice.length && emitted < limit; i++) {
+		const newSlice = newLines.slice(0, DIFF_LINES_PER_HUNK);
+		const pairCount = Math.min(oldSlice.length, newSlice.length);
+
+		for (let i = 0; i < pairCount && emitted < limit; i++) {
+			const ln = String(matchIdx + i + 1).padStart(gutterW);
+			const pad = " ".repeat(gutterW);
+			if (shouldInlineDiff(oldSlice[i], newSlice[i])) {
+				lines.push(
+					renderInlineChangedLine(
+						ln,
+						"-",
+						oldSlice[i],
+						newSlice[i],
+						width,
+						theme,
+					),
+				);
+				emitted++;
+				if (emitted >= limit) break;
+				lines.push(
+					renderInlineChangedLine(
+						pad,
+						"+",
+						newSlice[i],
+						oldSlice[i],
+						width,
+						theme,
+					),
+				);
+				emitted++;
+			} else {
+				lines.push(
+					truncateToWidth(
+						theme.fg("toolDiffRemoved", `  ${ln} │-`) +
+							theme.fg("toolDiffRemoved", ` ${oldSlice[i]}`),
+						width,
+					),
+				);
+				emitted++;
+				if (emitted >= limit) break;
+				lines.push(
+					truncateToWidth(
+						theme.fg("toolDiffAdded", `  ${pad} │+`) +
+							theme.fg("toolDiffAdded", ` ${newSlice[i]}`),
+						width,
+					),
+				);
+				emitted++;
+			}
+		}
+
+		for (let i = pairCount; i < oldSlice.length && emitted < limit; i++) {
 			const ln = String(matchIdx + i + 1).padStart(gutterW);
 			lines.push(
 				truncateToWidth(
@@ -385,9 +502,7 @@ function buildHunkPreview(
 			);
 		}
 
-		// Added lines
-		const newSlice = newLines.slice(0, DIFF_LINES_PER_HUNK);
-		for (let i = 0; i < newSlice.length && emitted < limit; i++) {
+		for (let i = pairCount; i < newSlice.length && emitted < limit; i++) {
 			const pad = " ".repeat(gutterW);
 			lines.push(
 				truncateToWidth(
@@ -421,11 +536,32 @@ function buildHunkPreview(
 			emitted++;
 		}
 	} else {
-		// Can't locate in file — fall back to plain removed/added display
+		// Can't locate in file — still try inline highlighting for similar pairs
 		const oldSlice = oldLines.slice(0, DIFF_LINES_PER_HUNK);
-		for (const line of oldSlice) {
+		const newSlice = newLines.slice(0, DIFF_LINES_PER_HUNK);
+		const pairCount = Math.min(oldSlice.length, newSlice.length);
+
+		for (let i = 0; i < pairCount; i++) {
+			if (shouldInlineDiff(oldSlice[i], newSlice[i])) {
+				lines.push(
+					renderInlineChangedLine(" ", "-", oldSlice[i], newSlice[i], width, theme),
+				);
+				lines.push(
+					renderInlineChangedLine(" ", "+", newSlice[i], oldSlice[i], width, theme),
+				);
+			} else {
+				lines.push(
+					truncateToWidth(theme.fg("toolDiffRemoved", `  - ${oldSlice[i]}`), width),
+				);
+				lines.push(
+					truncateToWidth(theme.fg("toolDiffAdded", `  + ${newSlice[i]}`), width),
+				);
+			}
+		}
+
+		for (let i = pairCount; i < oldSlice.length; i++) {
 			lines.push(
-				truncateToWidth(theme.fg("toolDiffRemoved", `  - ${line}`), width),
+				truncateToWidth(theme.fg("toolDiffRemoved", `  - ${oldSlice[i]}`), width),
 			);
 		}
 		if (oldLines.length > DIFF_LINES_PER_HUNK) {
@@ -441,10 +577,9 @@ function buildHunkPreview(
 			lines.push(theme.fg("dim", "    ───"));
 		}
 
-		const newSlice = newLines.slice(0, DIFF_LINES_PER_HUNK);
-		for (const line of newSlice) {
+		for (let i = pairCount; i < newSlice.length; i++) {
 			lines.push(
-				truncateToWidth(theme.fg("toolDiffAdded", `  + ${line}`), width),
+				truncateToWidth(theme.fg("toolDiffAdded", `  + ${newSlice[i]}`), width),
 			);
 		}
 		if (newLines.length > DIFF_LINES_PER_HUNK) {

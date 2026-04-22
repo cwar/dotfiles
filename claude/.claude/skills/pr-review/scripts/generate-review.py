@@ -2631,7 +2631,7 @@ function extractNewFileContent(fileDiff) {{
         if (el.classList.contains('diff-hunk')) {{
             // Start a new chunk for each hunk
             if (currentChunk.length > 0) {{
-                chunks.push(currentChunk.join('\n'));
+                chunks.push(currentChunk.join('\\n'));
                 currentChunk = [];
             }}
             inContent = true;
@@ -2644,7 +2644,7 @@ function extractNewFileContent(fileDiff) {{
         const text = code.textContent;
         currentChunk.push(text.length > 0 ? text.substring(1) : '');
     }});
-    if (currentChunk.length > 0) chunks.push(currentChunk.join('\n'));
+    if (currentChunk.length > 0) chunks.push(currentChunk.join('\\n'));
     return chunks;
 }}
 

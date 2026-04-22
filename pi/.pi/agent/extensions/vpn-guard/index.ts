@@ -18,7 +18,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { isBashToolResult } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { execFile } from "node:child_process";
 
 // -- VPN-Protected Domain Patterns ------------------------------------------
@@ -130,12 +130,63 @@ const FAILURE_PATTERNS: VpnFailurePattern[] = [
 
 // -- Helpers ----------------------------------------------------------------
 
-function checkGpConnected(): Promise<boolean> {
+const GP_TUNNEL_INTERFACE = /^gpd\d+$/;
+const GENERIC_TUNNEL_INTERFACE = /^tun\d+$/;
+
+function execFileText(file: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile("ip", ["link", "show", "gpd0"], (err) => {
+    execFile(file, args, { encoding: "utf8" }, (err, stdout) => {
+      if (err) {
+        resolve(null);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+function commandExists(command: "globalprotect" | "gpclient"): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], (err) => {
       resolve(!err);
     });
   });
+}
+
+function getUpInterfaces(linkBrief: string): string[] {
+  return linkBrief
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const match = line.match(/^(\S+)\s+(\S+)\s+.*<(.*)>$/);
+      if (!match) return [];
+
+      const [, name, state, flags] = match;
+      if (state === "DOWN") return [];
+
+      return flags.split(",").includes("UP") ? [name] : [];
+    });
+}
+
+async function checkGpConnected(): Promise<boolean> {
+  const linkBrief = await execFileText("ip", ["-brief", "link"]);
+  if (!linkBrief) return false;
+
+  const upInterfaces = getUpInterfaces(linkBrief);
+
+  // Native GlobalProtect interface name on some Linux setups.
+  if (upInterfaces.some((name) => GP_TUNNEL_INTERFACE.test(name))) {
+    return true;
+  }
+
+  // gpclient/openconnect setups often expose the VPN as tun0/tun1 instead.
+  const hasGpClient = (await commandExists("globalprotect")) || (await commandExists("gpclient"));
+  if (hasGpClient && upInterfaces.some((name) => GENERIC_TUNNEL_INTERFACE.test(name))) {
+    return true;
+  }
+
+  return false;
 }
 
 function detectVpnFailure(output: string): VpnFailurePattern | null {
@@ -222,7 +273,7 @@ export default function vpnGuard(pi: ExtensionAPI) {
           content: [
             {
               type: "text" as const,
-              text: "GlobalProtect VPN is connected (gpd0 interface is up).",
+              text: "GlobalProtect VPN appears connected (detected active GP tunnel interface).",
             },
           ],
           details: { connected: true },
