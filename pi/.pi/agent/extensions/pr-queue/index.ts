@@ -13,8 +13,8 @@
  *
  * Integration:
  *   - Shares PR data with the statusline extension (segPrReviews reads the same cache)
- *   - Selecting a PR injects "review <url>" into the editor, triggering the pr-review skill
- *   - "review all" mode queues PRs and auto-injects the next one after each review completes
+ *   - Selecting a PR sends "review <url>" as a user message, triggering the pr-review skill
+ *   - "review all" mode queues PRs and auto-sends the next one after each review completes
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -273,8 +273,11 @@ function buildItems(prs: PrInfo[]): PrSelectItem[] {
 export default function prQueue(pi: ExtensionAPI) {
 
   function launchReview(pr: PrInfo, ctx: any): void {
-    ctx.ui.setEditorText(`review ${pr.url}`);
-    ctx.ui.notify(`Queued review: PR #${pr.number}`, "info");
+    // Use sendUserMessage so the prompt is delivered directly to the agent
+    // and always triggers a turn. setEditorText was unreliable — it would
+    // sometimes leave the editor empty after the overlay closed.
+    pi.sendUserMessage(`review ${pr.url}`);
+    ctx.ui.notify(`Launching review: PR #${pr.number}`, "info");
   }
 
   function advanceQueue(ctx: any): void {
