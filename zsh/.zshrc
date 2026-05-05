@@ -125,6 +125,10 @@ eval "$(starship init zsh)"
 fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
 
+# zoxide (smarter cd — `z <partial>` jumps to frecent dirs)
+export _ZO_DOCTOR=0
+eval "$(zoxide init zsh --cmd cd)"
+
 # Claude wrapper - sets tmux window name while claude runs
 # Claude insights greeting (shows occasional insight on shell open)
 [[ -x "$HOME/.local/bin/claude-insights" ]] && claude-insights greeting
