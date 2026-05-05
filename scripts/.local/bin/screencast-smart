@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Toggle screen recording with wf-recorder.
+# First press: pick region (or fullscreen) + start.
+# Second press: stop + notify file path.
+#
+# Usage: screencast-smart [region|full] [mic|nomic]
+# Defaults: region mic
+
+set -euo pipefail
+
+PIDFILE=/tmp/screencast.pid
+PATHFILE=/tmp/screencast.path
+OUTDIR="$HOME/Videos"
+
+# Toggle: if a recorder is already running, stop it.
+if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  pid=$(cat "$PIDFILE")
+  outfile=$(cat "$PATHFILE" 2>/dev/null || echo "")
+  kill -INT "$pid"
+  while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done
+  rm -f "$PIDFILE" "$PATHFILE"
+  notify-send -t 5000 "Screencast saved" "$outfile"
+  exit 0
+fi
+
+mode="${1:-region}"
+mic="${2:-mic}"
+
+mkdir -p "$OUTDIR"
+
+geom=""
+case "$mode" in
+  region) geom=$(slurp) || exit 1 ;;
+  full)   ;;
+  *) echo "unknown mode: $mode" >&2; exit 2 ;;
+esac
+
+ts=$(date +%Y%m%d_%H%M%S)
+outfile="$OUTDIR/screencast_${ts}.mp4"
+
+args=(--no-dmabuf -f "$outfile")
+[[ -n "$geom" ]] && args+=(-g "$geom")
+if [[ "$mic" == "mic" ]]; then
+  src=$(pactl get-default-source)
+  args+=("--audio=$src" --audio-codec aac)
+fi
+
+# Detach via setsid -f so wf-recorder survives the script's transient
+# systemd scope (Hyprland exec wraps the script in one and tears it down
+# on script exit, taking backgrounded children with it).
+setsid -f wf-recorder "${args[@]}" >/tmp/screencast.log 2>&1
+
+# setsid -f double-forks and doesn't expose the grandchild PID, so find
+# it via pgrep. Retry briefly in case the process hasn't started yet.
+wfpid=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  wfpid=$(pgrep -n -x wf-recorder || true)
+  [[ -n "$wfpid" ]] && break
+  sleep 0.1
+done
+
+if [[ -z "$wfpid" ]]; then
+  notify-send -u critical "Screencast failed" "wf-recorder did not start — see /tmp/screencast.log"
+  exit 1
+fi
+
+echo "$wfpid" > "$PIDFILE"
+echo "$outfile" > "$PATHFILE"
+
+label="$mode"
+[[ "$mic" == "mic" ]] && label="$label + mic" || label="$label (no mic)"
+notify-send -t 3000 "Screencast started" "$label → $outfile"
