@@ -7,6 +7,8 @@ declare -A bindings=(
     ["Super + W: Close window (recoverable)"]="~/.local/bin/hypr-undo-close close"
     ["Super + Z: Undo close window"]="~/.local/bin/hypr-undo-close pop"
     ["Super + T: Toggle floating"]="hyprctl dispatch togglefloating"
+    ["Super + F: Fullscreen active window"]="hyprctl dispatch fullscreen 0"
+    ["Super + Shift + F: Maximize active window"]="hyprctl dispatch fullscreen 1"
     ["Super + P: Toggle pseudo-tiling"]="hyprctl dispatch pseudo"
     ["Super + J: Toggle split"]="hyprctl dispatch togglesplit"
 
@@ -48,11 +50,13 @@ declare -A bindings=(
     ["Super + F: Yazi file manager"]="ghostty -e yazi"
     ["Super + Shift + A: Claude AI"]="chromium --app=https://claude.ai"
     ["Super + Shift + B: Browser"]="chromium"
+    ["Super + Shift + M: Tomes Metrics dashboard"]="~/.local/bin/launch-or-focus 'Page Load Targets' 'chromium --app=https://grafana.taild0ac70.ts.net/d/tomes-page-load-targets/tomes-e28094-page-load-targets'"
     ["Super + Shift + T: System monitor (btop)"]="pgrep -x btop && hyprctl dispatch focuswindow title:btop || ghostty --title=btop -e btop"
     ["Super + Shift + N: Neovim"]="ghostty -e nvim"
     ["Super + Shift + D: Discord"]="discord --enable-features=UseOzonePlatform --ozone-platform=wayland"
     ["Super + Shift + L: Clipboard to single line"]="wl-paste | tr -d '\n' | wl-copy"
     ["Super + Shift + R: Resume Claude Code session"]="~/.local/bin/claude-sessions"
+    ["Super + Shift + P: Browse Claude Code projects"]="ghostty --title=claude-projects -e ~/.local/bin/claude-projects"
     ["Super + C: Copy (universal)"]=""
     ["Super + V: Paste (universal)"]=""
     ["Super + X: Cut (universal)"]=""
@@ -60,20 +64,27 @@ declare -A bindings=(
     ["Super + Alt + T: Theme switcher"]="~/.local/bin/theme-rofi"
     ["Super + Alt + I: Claude Insights"]="~/.local/bin/claude-insights rofi"
     ["Super + Alt + S: Showcase (tweaks & projects)"]="~/.local/bin/showcase rofi"
+    ["Super + Alt + Q: Toggle Quickshell bar"]="~/.local/bin/quickshell-toggle"
+    ["Super + Alt + L: Lock (Quickshell)"]="~/.local/bin/quickshell-lock"
+    ["Super + Alt + K: Toggle K8s sidebar (Quickshell)"]="~/.local/bin/k8s-sidebar-toggle"
     ["Super + A: Audio source picker"]="ghostty -e ~/.local/bin/audio-picker"
     ["Super + B: Bluetooth manager"]="ghostty --title=bluetooth -e bluetui"
     ["Super + Shift + W: Weather (local forecast)"]="ghostty --title=weather -e ~/.local/bin/weather-tui"
 
     # Screenshots - to clipboard
-    ["Print: Screenshot area to clipboard"]="grim -g \"\$(slurp)\" - | wl-copy"
+    ["Print: Smart screenshot to clipboard (hover window or drag region)"]="screenshot-smart copy"
     ["Shift + Print: Full screenshot to clipboard"]="grim - | wl-copy"
     ["Ctrl + Print: Screenshot focused window"]="grim -g \"\$(hyprctl activewindow -j | jq -r '\"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])\"')\" - | wl-copy"
-    ["Super + Print: Screenshot area to file"]=""
+    ["Super + Print: Smart screenshot to file (hover window or drag region)"]="screenshot-smart save"
     # Screenshots - open in Satty
-    ["Alt + Print: Screenshot area (Satty)"]="grim -g \"\$(slurp)\" - | satty --filename -"
+    ["Alt + Print: Smart screenshot (Satty)"]="screenshot-smart satty"
     ["Super + Shift + Print: Full screenshot (Satty)"]="grim - | satty --filename -"
     ["Super + Ctrl + Print: Screenshot window (Satty)"]="grim -g \"\$(hyprctl activewindow -j | jq -r '\"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])\"')\" - | satty --filename -"
     ["Super + Alt + Print: Open clipboard in Satty"]="wl-paste | satty --filename -"
+
+    # Screencast (toggle start/stop, fullscreen)
+    ["Super + Alt + R: Screencast fullscreen + mic (toggle)"]="~/.local/bin/screencast-smart full mic"
+    ["Super + Alt + Ctrl + R: Screencast fullscreen, no mic (toggle)"]="~/.local/bin/screencast-smart full nomic"
 
     # Media
     ["Volume Up/Down: Adjust volume"]=""
@@ -103,7 +114,10 @@ declare -A bindings=(
     ["Super + K: Show this menu"]=""
     ["Super + Shift + G: Lazygit (uses terminal cwd)"]="~/.local/bin/launch-lazygit"
     ["Super + Shift + I: Toggle monitor input (HDMI1/HDMI2)"]="~/.local/bin/samsung-input-toggle"
+    ["Hotel TV: Apply 5% underscan (fix overscan)"]="~/.local/bin/hotel-underscan"
+    ["Hotel TV: Reset underscan to native"]="~/.local/bin/hotel-underscan reset"
     ["Super + G: Keyboard mouse control"]="wl-kbptr"
+    ["Super + Ctrl + G: Kill keyboard mouse control (when stuck)"]="pkill wl-kbptr"
 )
 
 # Build menu
