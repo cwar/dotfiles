@@ -3,8 +3,9 @@
 
 set -euo pipefail
 
-# Capture visible pane content + scrollback visible area
-CONTENT=$(tmux capture-pane -p -S -500 2>/dev/null || tmux capture-pane -p)
+# Capture visible pane content + scrollback. -J joins wrapped lines so a URL
+# that wrapped at the terminal width survives as a single token.
+CONTENT=$(tmux capture-pane -p -J -S -500 2>/dev/null || tmux capture-pane -p -J)
 
 # Extract URLs (http/https/ftp, git@, file://, bare domains)
 URLS=$(echo "$CONTENT" | grep -oP '(https?://|ftp://|file://)[^\s<>"'\''\)\]\}│┃|,;]+' | 
@@ -23,9 +24,11 @@ URL_COUNT=$(echo "$URLS" | wc -l)
 SELECTED=$(echo "$URLS" | fzf-tmux -p 90%,60% \
     --multi \
     --reverse \
-    --header="╸ $URL_COUNT URLs found ╺ enter=open │ ctrl-y=copy │ ctrl-a=copy all" \
+    --header="╸ $URL_COUNT URLs found ╺ space/tab=mark │ enter=open │ ctrl-y=copy marked │ ctrl-a=copy all" \
     --prompt="🔗 " \
-    --bind="ctrl-y:execute-silent(echo {} | wl-copy)+abort" \
+    --bind="space:toggle" \
+    --bind="alt-a:select-all" \
+    --bind="alt-d:deselect-all" \
     --bind="ctrl-a:execute-silent(echo '$URLS' | wl-copy)+abort" \
     --expect="enter,ctrl-y" \
     --color="bg:#0a0e14,fg:#d4ffda,header:#39ff14,prompt:#39ff14,pointer:#39ff14,hl:#5c7a65,hl+:#39ff14,info:#5c7a65" \
@@ -39,11 +42,19 @@ CHOSEN=$(echo "$SELECTED" | tail -n +2)
 
 if [ "$KEY" = "ctrl-y" ]; then
     echo -n "$CHOSEN" | wl-copy
-    tmux display-message "📋 Copied to clipboard"
+    COUNT=$(echo "$CHOSEN" | wc -l)
+    if [ "$COUNT" -eq 1 ]; then
+        tmux display-message "📋 Copied: $CHOSEN"
+    else
+        tmux display-message "📋 Copied $COUNT URLs to clipboard"
+    fi
 else
-    # Open each selected URL
+    # Open each selected URL. setsid -f detaches the spawn into its own
+    # session with no controlling tty so a cold-starting browser survives
+    # this script's exit (a backgrounded xdg-open inherits tmux's tty and
+    # gets SIGHUP'd before chromium finishes mapping its window).
     while IFS= read -r url; do
-        xdg-open "$url" &>/dev/null &
+        setsid -f xdg-open "$url" </dev/null >/dev/null 2>&1
     done <<< "$CHOSEN"
     COUNT=$(echo "$CHOSEN" | wc -l)
     if [ "$COUNT" -eq 1 ]; then
