@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# hypr-undo-close — "oh shit" undo for accidentally closed windows
+#
+# Instead of killing windows, moves them to a hidden special workspace.
+# Undo pulls them back with full state preserved.
+#
+# Usage:
+#   hypr-undo-close close    — move active window to trash (replaces killactive)
+#   hypr-undo-close pop      — restore most recently trashed window
+#   hypr-undo-close list     — show trashed windows
+#   hypr-undo-close reap     — kill windows older than TTL (run via timer)
+#   hypr-undo-close status   — show trash state
+
+TRASH_WS="special:__closed"
+MAX_TRASH=5
+TTL_SECONDS=120  # 2 minutes
+
+# Only these window classes get the soft-close (trash) treatment.
+# Everything else is killed outright so audio/video stops immediately.
+TRASHABLE_CLASSES=(
+    com.mitchellh.ghostty
+)
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/hypr-undo-close"
+TRASH_LOG="$STATE_DIR/trash.jsonl"  # tracks: {addr, from_ws, timestamp}
+
+mkdir -p "$STATE_DIR"
+touch "$TRASH_LOG"
+
+# ─── Close (move to trash) ────────────────────────────────────────
+
+do_close() {
+    # Get active window info
+    local win
+    win=$(hyprctl activewindow -j 2>/dev/null)
+    [[ -z "$win" || "$win" == "null" ]] && exit 0
+
+    local addr class title ws_id
+    addr=$(echo "$win" | jq -r '.address')
+    class=$(echo "$win" | jq -r '.class')
+    title=$(echo "$win" | jq -r '.title')
+    ws_id=$(echo "$win" | jq -r '.workspace.id')
+
+    [[ -z "$addr" || "$addr" == "null" ]] && exit 0
+
+    # Don't trash windows already in a special workspace
+    if (( ws_id < 0 )); then
+        hyprctl dispatch killactive
+        exit 0
+    fi
+
+    # Only trash allowlisted classes — media/browsers/etc should die so they stop playing
+    local trashable=0
+    for c in "${TRASHABLE_CLASSES[@]}"; do
+        if [[ "$class" == "$c" ]]; then
+            trashable=1
+            break
+        fi
+    done
+    if (( trashable == 0 )); then
+        hyprctl dispatch killactive
+        exit 0
+    fi
+
+    # Move to trash workspace
+    hyprctl dispatch movetoworkspacesilent "$TRASH_WS" >/dev/null 2>&1
+
+    # Log it
+    jq -nc \
+        --arg addr "$addr" \
+        --arg class "$class" \
+        --arg title "$title" \
+        --arg from_ws "$ws_id" \
+        --arg ts "$(date +%s)" \
+        '{addr: $addr, class: $class, title: $title, from_ws: ($from_ws|tonumber), ts: ($ts|tonumber)}' \
+        >> "$TRASH_LOG"
+
+    # Enforce max trash size — kill oldest if over limit
+    local count
+    count=$(wc -l < "$TRASH_LOG")
+    if (( count > MAX_TRASH )); then
+        # Kill the oldest window(s)
+        local excess=$(( count - MAX_TRASH ))
+        head -n "$excess" "$TRASH_LOG" | while IFS= read -r entry; do
+            local old_addr
+            old_addr=$(echo "$entry" | jq -r '.addr')
+            hyprctl dispatch closewindow "address:$old_addr" >/dev/null 2>&1
+        done
+        # Remove from log
+        tail -n "$MAX_TRASH" "$TRASH_LOG" > "$TRASH_LOG.tmp" && mv "$TRASH_LOG.tmp" "$TRASH_LOG"
+    fi
+}
+
+# ─── Pop (restore last trashed) ──────────────────────────────────
+
+do_pop() {
+    if [[ ! -s "$TRASH_LOG" ]]; then
+        notify-send -t 2000 "Undo Close" "Nothing to restore"
+        exit 0
+    fi
+
+    # Pop the newest entry
+    local entry
+    entry=$(tail -n 1 "$TRASH_LOG")
+    sed -i '$ d' "$TRASH_LOG"
+
+    local addr class title from_ws
+    addr=$(echo "$entry" | jq -r '.addr')
+    class=$(echo "$entry" | jq -r '.class')
+    title=$(echo "$entry" | jq -r '.title')
+    from_ws=$(echo "$entry" | jq -r '.from_ws')
+
+    # Verify window still exists
+    local exists
+    exists=$(hyprctl clients -j | jq --arg addr "$addr" '[.[] | select(.address == $addr)] | length')
+    if [[ "$exists" == "0" ]]; then
+        notify-send -t 2000 "Undo Close" "Window already gone: $title"
+        # Try next one if available
+        if [[ -s "$TRASH_LOG" ]]; then
+            do_pop
+        fi
+        exit 0
+    fi
+
+    # Move back to original workspace
+    hyprctl dispatch movetoworkspacesilent "$from_ws,address:$addr" >/dev/null 2>&1
+    hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1
+
+    notify-send -t 1500 "↩ Restored" "$title"
+}
+
+# ─── Reap (TTL cleanup) ──────────────────────────────────────────
+
+do_reap() {
+    [[ ! -s "$TRASH_LOG" ]] && exit 0
+
+    local now
+    now=$(date +%s)
+    local keep=""
+
+    while IFS= read -r entry; do
+        local ts addr
+        ts=$(echo "$entry" | jq -r '.ts')
+        addr=$(echo "$entry" | jq -r '.addr')
+        local age=$(( now - ts ))
+
+        if (( age > TTL_SECONDS )); then
+            # Kill the expired window
+            hyprctl dispatch closewindow "address:$addr" >/dev/null 2>&1
+        else
+            keep+="$entry"$'\n'
+        fi
+    done < "$TRASH_LOG"
+
+    # Rewrite log with only surviving entries
+    printf '%s' "$keep" > "$TRASH_LOG"
+}
+
+# ─── List ─────────────────────────────────────────────────────────
+
+do_list() {
+    if [[ ! -s "$TRASH_LOG" ]]; then
+        echo "Trash is empty"
+        exit 0
+    fi
+
+    local now
+    now=$(date +%s)
+
+    echo "Trashed windows (newest last):"
+    echo "──────────────────────────────"
+    local i=1
+    while IFS= read -r entry; do
+        local class title ts from_ws
+        class=$(echo "$entry" | jq -r '.class')
+        title=$(echo "$entry" | jq -r '.title')
+        ts=$(echo "$entry" | jq -r '.ts')
+        from_ws=$(echo "$entry" | jq -r '.from_ws')
+        local age=$(( now - ts ))
+        local remaining=$(( TTL_SECONDS - age ))
+        printf "%2d. [ws:%s] %s — %s (%ds left)\n" "$i" "$from_ws" "$class" "$title" "$remaining"
+        ((i++))
+    done < "$TRASH_LOG"
+}
+
+# ─── Status ───────────────────────────────────────────────────────
+
+do_status() {
+    local count=0
+    [[ -s "$TRASH_LOG" ]] && count=$(wc -l < "$TRASH_LOG")
+    echo "Trash: $count/$MAX_TRASH windows"
+    echo "TTL: ${TTL_SECONDS}s"
+    if (( count > 0 )); then
+        echo ""
+        do_list
+    fi
+}
+
+# ─── Main ─────────────────────────────────────────────────────────
+
+case "${1:-}" in
+    close)  do_close ;;
+    pop)    do_pop ;;
+    reap)   do_reap ;;
+    list)   do_list ;;
+    status) do_status ;;
+    *)
+        echo "Usage: hypr-undo-close {close|pop|list|reap|status}"
+        exit 1
+        ;;
+esac
