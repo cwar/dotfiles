@@ -4,14 +4,20 @@ macro_workers = 10     # Max concurrent macro tasks (default 25)
 bizarre_retry = 3      # Retry failed tasks (default 5)
 
 [plugin]
+prepend_fetchers = [
+    # Extension-based MIME lookup — avoids per-file `file(1)` invocations
+    # that backed up the micro-worker queue on large dirs / quirky files.
+    { url = "local://*",  run = "mime-ext.local",  prio = "high", group = "mime" },
+    { url = "remote://*", run = "mime-ext.remote", prio = "high", group = "mime" },
+]
 prepend_preloaders = [
-    { name = "*.m4b", run = "mediainfo" },
+    { url = "*.m4b", run = "mediainfo" },
     { mime = "{audio,video,image}/*", run = "mediainfo" },
 ]
 prepend_previewers = [
-    { name = "*.m4b", run = "mediainfo" },
+    { url = "*.m4b", run = "mediainfo" },
     { mime = "{audio,video,image}/*", run = "mediainfo" },
-    { name = "*.epub", run = "epub-preview" },
+    { url = "*.epub", run = "epub-preview" },
     { mime = "application/epub+zip", run = "epub-preview" },
 ]
 
@@ -44,11 +50,11 @@ append_rules = [
     { mime = "application/json", use = "edit" },
     { mime = "application/x-yaml", use = "edit" },
     { mime = "audio/*", use = "audio" },
-    { name = "*.m4b", use = "audio" },
-    { name = "*.m4a", use = "audio" },
+    { url = "*.m4b", use = "audio" },
+    { url = "*.m4a", use = "audio" },
     { mime = "video/*", use = "video" },
     { mime = "image/*", use = "image" },
-    { name = "*.epub", use = "epub" },
+    { url = "*.epub", use = "epub" },
     { mime = "application/epub+zip", use = "epub" },
     { mime = "application/pdf", use = "pdf" },
 ]
