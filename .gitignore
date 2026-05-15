@@ -12,5 +12,8 @@ pi/.pi/agent/mcp.json.bak
 # Vite cache
 .vite/
 
+# Claude Code project worktrees (ephemeral scratch space)
+.claude/worktrees/
+
 # OS
 .DS_Store
