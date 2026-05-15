@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Launch sysupdate in a floating ghostty on the current workspace
+WS=$(hyprctl activeworkspace -j | jq -r '.id')
+hyprctl dispatch exec "[workspace $WS]" "ghostty --title=sysupdate -e bash -lc '$HOME/.local/bin/sysupdate; echo; echo Press any key to close...; read -n1'"
+# Refresh waybar module after window closes (background wait)
+(sleep 2 && pkill -RTMIN+8 waybar) &

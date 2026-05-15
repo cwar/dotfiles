@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Scan recently upgraded packages for breaking config changes via GitHub releases.
+# Usage: sysupdate-breaking-check <upgrade-file>
+#   upgrade-file: one "pkgname oldver newver" per line
+
+BOLD='\033[1m'
+GREEN='\033[1;32m'
+BLUE='\033[1;34m'
+YELLOW='\033[1;33m'
+RED='\033[1;31m'
+RESET='\033[0m'
+
+# Packages to watch and their GitHub repos
+declare -A WATCH=(
+    [hyprland]="hyprwm/Hyprland"
+    [ghostty]="ghostty-org/ghostty"
+    [waybar]="Alexays/Waybar"
+    [tmux]="tmux/tmux"
+    [neovim]="neovim/neovim"
+    [pipewire]="PipeWire/pipewire"
+    [wireplumber]="PipeWire/wireplumber"
+    [hyprlock]="hyprwm/hyprlock"
+    [hypridle]="hyprwm/hypridle"
+    [hyprpaper]="hyprwm/hyprpaper"
+    [hyprpicker]="hyprwm/hyprpicker"
+    [cliphist]="sentriz/cliphist"
+    [swww]="LGFae/swww"
+    [rofi-wayland]="lbonn/rofi"
+    [mako]="emersion/mako"
+    [wl-clipboard]="bugaevc/wl-clipboard"
+    [swaync]="ErikReider/SwayNotificationCenter"
+    [yay]="Jguer/yay"
+    [starship]="starship/starship"
+    [btop]="aristocratos/btop"
+    [eza]="eza-community/eza"
+    [bat]="sharkdp/bat"
+    [fzf]="junegunn/fzf"
+    [zsh]=""
+    [docker]="moby/moby"
+    [kubectl]="kubernetes/kubernetes"
+)
+
+# Keywords that suggest breaking/migration notes (case-insensitive extended regex)
+BREAK_RE='breaking.change|breaking:|BREAKING|migration required|manual intervention|incompatible change|no longer support|deprecated.{0,40}remov|config.{0,30}change|requires.{0,30}manual|behavior.{0,30}changed|renamed.{0,30}to|removed.{0,30}option|removed.{0,30}flag'
+
+input_file="${1:-}"
+if [[ -z "$input_file" || ! -f "$input_file" ]]; then
+    echo "Usage: sysupdate-breaking-check <upgrade-file>" >&2
+    exit 1
+fi
+
+# Filter input to only watchlist packages
+declare -a watched_upgrades=()
+while read -r pkg old_ver new_ver; do
+    [[ -v WATCH["$pkg"] ]] && watched_upgrades+=("$pkg $old_ver $new_ver")
+done < "$input_file"
+
+[[ ${#watched_upgrades[@]} -eq 0 ]] && exit 0
+
+echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "${BOLD}  🔍 Breaking Change Check${RESET}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
+echo -e "  Checking ${#watched_upgrades[@]} config-sensitive package(s)...\n"
+
+# Strip epoch (e.g. "2:1.0") and pkgrel (e.g. "1.0-4") and leading "v"
+strip_ver() {
+    echo "$1" | sed 's/^[0-9]*://' | sed 's/-[[:digit:]]*$//' | sed 's/^v//'
+}
+
+# Returns 0 (true) if $1 > $2 using version sort
+ver_gt() {
+    local a b
+    a=$(strip_ver "$1")
+    b=$(strip_ver "$2")
+    [[ "$a" == "$b" ]] && return 1
+    [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" == "$a" ]]
+}
+
+for entry in "${watched_upgrades[@]}"; do
+    read -r pkg old_ver new_ver <<< "$entry"
+    repo="${WATCH[$pkg]}"
+    old_clean=$(strip_ver "$old_ver")
+    new_clean=$(strip_ver "$new_ver")
+
+    printf "  ${BOLD}%-22s${RESET} %s → %s" "$pkg" "$old_clean" "$new_clean"
+
+    if [[ -z "$repo" ]]; then
+        echo -e "  ${YELLOW}⊘${RESET} (no GitHub repo tracked — check https://archlinux.org/news/)"
+        continue
+    fi
+
+    releases_json=$(gh api "repos/$repo/releases?per_page=25" 2>/dev/null) || {
+        echo -e "  ${YELLOW}⊘${RESET} (GitHub API unavailable)"
+        continue
+    }
+
+    declare -a breaking_hits=()
+
+    while IFS= read -r rel_json; do
+        tag=$(echo "$rel_json" | jq -r '.tag_name // ""')
+        name=$(echo "$rel_json" | jq -r '.name // ""')
+        body=$(echo "$rel_json" | jq -r '.body // ""')
+        tag_clean=$(strip_ver "$tag")
+
+        # Only check releases in range: old_clean < tag_clean <= new_clean
+        ver_gt "$tag_clean" "$old_clean" || continue
+        ver_gt "$tag_clean" "$new_clean" && continue
+
+        # Scan body for breaking keywords
+        matches=$(echo "$body" | grep -iE "$BREAK_RE" 2>/dev/null | sed 's/^[[:space:]]*//' | head -6) || true
+        if [[ -n "$matches" ]]; then
+            breaking_hits+=("${name:-$tag}|||$matches")
+        fi
+    done < <(echo "$releases_json" | jq -c '.[]' 2>/dev/null)
+
+    if [[ ${#breaking_hits[@]} -gt 0 ]]; then
+        echo -e "\n    ${YELLOW}⚠  ${#breaking_hits[@]} release(s) flagged — review before assuming configs are intact:${RESET}"
+        for hit in "${breaking_hits[@]}"; do
+            rel_name="${hit%%|||*}"
+            rel_notes="${hit##*|||}"
+            echo -e "    ${YELLOW}▸ $rel_name${RESET}"
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && echo -e "      $line"
+            done <<< "$rel_notes"
+        done
+        echo
+    else
+        echo -e "  ${GREEN}✓${RESET} No breaking changes detected in release notes"
+    fi
+
+    unset breaking_hits
+done
+
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
