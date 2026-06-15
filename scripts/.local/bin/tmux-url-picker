@@ -3,17 +3,151 @@
 
 set -euo pipefail
 
-# Capture visible pane content + scrollback visible area
-CONTENT=$(tmux capture-pane -p -S -500 2>/dev/null || tmux capture-pane -p)
+extract_urls() {
+  local input_file status
 
-# Extract URLs (http/https/ftp, git@, file://, bare domains)
-URLS=$(echo "$CONTENT" | grep -oP '(https?://|ftp://|file://)[^\s<>"'\''\)\]\}│┃|,;]+' | 
-       sed 's/[.)]*$//' |  # trim trailing periods/parens
-       awk '!seen[$0]++')  # deduplicate, preserve order
+  input_file=$(mktemp)
+  cat >"$input_file"
+
+  TMUX_URL_PICKER_WIDTH="${TMUX_URL_PICKER_WIDTH:-0}" python3 - "$input_file" <<'PY'
+import os
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+    text = handle.read()
+
+try:
+    pane_width = int(os.environ.get("TMUX_URL_PICKER_WIDTH", "0"))
+except ValueError:
+    pane_width = 0
+
+ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+url_start_re = re.compile(r"(?:https?|ftp|file)://")
+url_pattern = re.compile(r"(?:https?|ftp|file)://[^\s<>\"'\)\]\}│┃|,;]+")
+url_at_end_re = re.compile(r"(?:https?|ftp|file)://[^\s<>\"'\)\]\}│┃|,;]*$")
+continuation_re = re.compile(r"^\s*([A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+)\s*$")
+strong_url_chars_re = re.compile(r"[/?:#@!$&'()*+,;=%._~-]")
+
+logical_lines = []
+current = None
+
+for raw_line in text.splitlines():
+    line = ansi_re.sub("", raw_line).rstrip()
+
+    if current and url_at_end_re.search(current):
+        continuation = continuation_re.match(line)
+        if continuation and not url_start_re.search(line):
+            chunk = continuation.group(1)
+            previous_line_was_full = pane_width > 0 and len(current) >= pane_width - 2
+            chunk_looks_urlish = bool(strong_url_chars_re.search(chunk))
+            previous_ends_mid_url_token = current.endswith(("/", "?", "#", "&", "=", "%", ".", "-", "_", "~"))
+
+            if previous_line_was_full or chunk_looks_urlish or previous_ends_mid_url_token:
+                current += chunk
+                continue
+
+    if current is not None:
+        logical_lines.append(current)
+    current = line
+
+if current is not None:
+    logical_lines.append(current)
+
+seen = set()
+for line in logical_lines:
+    for match in url_pattern.finditer(line):
+        url = match.group(0).rstrip(".)")
+        if url and url not in seen:
+            seen.add(url)
+            print(url)
+PY
+  status=$?
+  rm -f "$input_file"
+  return "$status"
+}
+
+assert_extract() {
+  local name input expected actual
+
+  name=$1
+  input=$2
+  expected=$3
+  actual=$(printf '%s' "$input" | TMUX_URL_PICKER_WIDTH=72 extract_urls)
+
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'not ok - %s\n' "$name" >&2
+    printf 'expected:\n%s\n' "$expected" >&2
+    printf 'actual:\n%s\n' "$actual" >&2
+    return 1
+  fi
+
+  printf 'ok - %s\n' "$name"
+}
+
+run_self_tests() {
+  local failures input expected
+
+  failures=0
+
+  input=$(
+    cat <<'EOF'
+https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c25
+0a-e61b-44d9-88ed-594d1962f5e&response_type=code&redirect_uri=htt
+ps%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=o
+rg%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessio
+ns%3Aclaude_code+user%3Amcp_server+user%3Afile_upload&code_chall
+enge=mzV4Gv2bIpMlyeryPUSdC_TznSFXEK_tXgPEzZP8FVA&code_challenge_m
+ethod=S256&state=QIEzqZb0jmxGNPE7tggOMmRlZk4aUrxhzwLeEICEOPo
+EOF
+  )
+  expected=$(printf '%s' "$input" | tr -d '\n')
+  assert_extract "joins wrapped oauth URL" "$input" "$expected" || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+Use https://example.com/login
+thanks
+EOF
+  )
+  expected="https://example.com/login"
+  assert_extract "does not join ordinary following text" "$input" "$expected" || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+https://example.com/a
+https://example.com/a
+https://example.com/b.
+EOF
+  )
+  expected=$(
+    cat <<'EOF'
+https://example.com/a
+https://example.com/b
+EOF
+  )
+  assert_extract "deduplicates and trims trailing punctuation" "$input" "$expected" || failures=$((failures + 1))
+
+  if ((failures > 0)); then
+    return 1
+  fi
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  run_self_tests
+  exit $?
+fi
+
+# Capture visible pane content + scrollback visible area. -J asks tmux to join
+# terminal-soft-wrapped lines; extract_urls also handles hard-wrapped URL text
+# emitted by TUIs.
+PANE_WIDTH=$(tmux display-message -p '#{pane_width}' 2>/dev/null || printf '0')
+CONTENT=$(tmux capture-pane -p -J -S -500 2>/dev/null || tmux capture-pane -p -S -500 2>/dev/null || tmux capture-pane -p)
+URLS=$(printf '%s\n' "$CONTENT" | TMUX_URL_PICKER_WIDTH="$PANE_WIDTH" extract_urls || true)
 
 if [ -z "$URLS" ]; then
-    tmux display-message "No URLs found on screen"
-    exit 0
+  tmux display-message "No URLs found on screen"
+  exit 0
 fi
 
 # Count URLs
@@ -21,15 +155,15 @@ URL_COUNT=$(echo "$URLS" | wc -l)
 
 # Use fzf in tmux popup to pick URL(s) and action
 SELECTED=$(echo "$URLS" | fzf-tmux -p 90%,60% \
-    --multi \
-    --reverse \
-    --header="╸ $URL_COUNT URLs found ╺ enter=open │ ctrl-y=copy │ ctrl-a=copy all" \
-    --prompt="🔗 " \
-    --bind="ctrl-y:execute-silent(echo {} | wl-copy)+abort" \
-    --bind="ctrl-a:execute-silent(echo '$URLS' | wl-copy)+abort" \
-    --expect="enter,ctrl-y" \
-    --color="bg:#0a0e14,fg:#d4ffda,header:#39ff14,prompt:#39ff14,pointer:#39ff14,hl:#5c7a65,hl+:#39ff14,info:#5c7a65" \
-    2>/dev/null) || exit 0
+  --multi \
+  --reverse \
+  --header="╸ $URL_COUNT URLs found ╺ enter=open │ ctrl-y=copy │ ctrl-a=copy all" \
+  --prompt="🔗 " \
+  --bind="ctrl-y:execute-silent(echo {} | wl-copy)+abort" \
+  --bind="ctrl-a:execute-silent(echo '$URLS' | wl-copy)+abort" \
+  --expect="enter,ctrl-y" \
+  --color="bg:#0a0e14,fg:#d4ffda,header:#39ff14,prompt:#39ff14,pointer:#39ff14,hl:#5c7a65,hl+:#39ff14,info:#5c7a65" \
+  2>/dev/null) || exit 0
 
 # Parse fzf output: first line is the key pressed, rest are selections
 KEY=$(echo "$SELECTED" | head -1)
@@ -38,17 +172,17 @@ CHOSEN=$(echo "$SELECTED" | tail -n +2)
 [ -z "$CHOSEN" ] && exit 0
 
 if [ "$KEY" = "ctrl-y" ]; then
-    echo -n "$CHOSEN" | wl-copy
-    tmux display-message "📋 Copied to clipboard"
+  echo -n "$CHOSEN" | wl-copy
+  tmux display-message "📋 Copied to clipboard"
 else
-    # Open each selected URL
-    while IFS= read -r url; do
-        xdg-open "$url" &>/dev/null &
-    done <<< "$CHOSEN"
-    COUNT=$(echo "$CHOSEN" | wc -l)
-    if [ "$COUNT" -eq 1 ]; then
-        tmux display-message "🌐 Opened: $CHOSEN"
-    else
-        tmux display-message "🌐 Opened $COUNT URLs"
-    fi
+  # Open each selected URL
+  while IFS= read -r url; do
+    xdg-open "$url" &>/dev/null &
+  done <<<"$CHOSEN"
+  COUNT=$(echo "$CHOSEN" | wc -l)
+  if [ "$COUNT" -eq 1 ]; then
+    tmux display-message "🌐 Opened: $CHOSEN"
+  else
+    tmux display-message "🌐 Opened $COUNT URLs"
+  fi
 fi

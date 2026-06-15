@@ -280,6 +280,12 @@ const CONTEXT_LINES = 3;
 const MIN_INLINE_CONTEXT = 4;
 /** Avoid noisy inline diffs when lines are wildly different in length. */
 const MAX_INLINE_LENGTH_DELTA = 80;
+/** Terminal tabs are rendered wider than one character; normalize before fitting. */
+const TAB_DISPLAY = "    ";
+
+function fitPreviewLine(line: string, width: number): string {
+	return truncateToWidth(line.replace(/\t/g, TAB_DISPLAY), Math.max(0, width));
+}
 
 /**
  * Try to locate `needle` in `haystack` (the file lines) and return its
@@ -595,18 +601,20 @@ function buildHunkPreview(
 	return lines;
 }
 
-function buildDiffPreview(
+export function buildDiffPreview(
 	toolName: string,
 	input: Record<string, unknown>,
 	width: number,
 	theme: any,
 	cwd?: string,
+	/** Pre-read file lines to avoid sync I/O on every render. */
+	cachedFileLines?: string[],
 ): string[] {
 	const lines: string[] = [];
 
 	if (toolName === "edit") {
 		const filePath = (input.path as string) ?? "";
-		const fileLines = readFileLines(filePath, cwd);
+		const fileLines = cachedFileLines ?? readFileLines(filePath, cwd);
 		const edits = extractEdits(input);
 
 		for (let i = 0; i < edits.length; i++) {
@@ -665,7 +673,7 @@ function buildDiffPreview(
 		}
 	}
 
-	return lines;
+	return lines.map((line) => fitPreviewLine(line, width));
 }
 
 function showApprovalDialog(
@@ -721,7 +729,18 @@ function showApprovalDialog(
 		});
 	}
 
-	return ctx.ui.custom<ApprovalChoice | null>((tui, theme, _kb, done) => {
+	// Read file lines ONCE up-front. The file isn't going to change while the
+	// dialog is open (the agent is paused), so reading on every render was
+	// just paying sync I/O for the same answer. Pre-reading also avoids
+	// stalls when the dialog gets re-rendered repeatedly due to upstream
+	// requestRender() calls (e.g., async git status, image conversion).
+	let cachedFileLines: string[] | undefined;
+	if (toolName === "edit") {
+		cachedFileLines = readFileLines((input.path as string) ?? "", cwd);
+	}
+
+	return ctx.ui.custom<ApprovalChoice | null>(
+		(tui, theme, _kb, done) => {
 		let selectedIdx = 0;
 		let amendMode = false;
 		let amendText = "";
@@ -786,6 +805,7 @@ function showApprovalDialog(
 					innerWidth,
 					theme,
 					previewCwd,
+					cachedFileLines,
 				);
 				for (const line of preview) {
 					out.push(" " + line);
@@ -838,7 +858,7 @@ function showApprovalDialog(
 			}
 
 			out.push(theme.fg("borderAccent", "─".repeat(width)));
-			return out;
+			return out.map((line) => fitPreviewLine(line, width));
 		}
 
 		function invalidate() {
@@ -976,7 +996,23 @@ function showApprovalDialog(
 				}
 			},
 		};
-	});
+	},
+		// Render as an overlay (composited on top of base content) instead of
+		// replacing the editor area. This keeps the dialog visually stable
+		// when upstream requestRender() calls (e.g., from async git status,
+		// image conversion in old tool-execution components) cause pi-tui to
+		// fall back to a fullRender(true) — which clears scrollback + screen
+		// and would otherwise look like the dialog "flashing up and down".
+		// See pi-tui/dist/tui.js doRender() lines ~752-822 for the redraw paths.
+		{
+			overlay: true,
+			overlayOptions: {
+				width: "100%",
+				anchor: "bottom-center",
+				maxHeight: "95%",
+			},
+		},
+	);
 }
 
 // ---------------------------------------------------------------------------

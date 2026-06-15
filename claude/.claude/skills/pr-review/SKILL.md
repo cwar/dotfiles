@@ -411,8 +411,9 @@ The reviewer pastes flagged items mid-review. This means they think the AI got s
 2. **Investigate with evidence** — run real commands to verify. The reviewer may be right (and often is — they know the codebase better). Gather new evidence to support the corrected understanding.
 3. **Acknowledge corrections honestly** — if you were wrong, say so and explain what you misunderstood.
 4. **Update the plan JSON** with corrected observations and fresh evidence. Turn wrong observations into correct ones backed by shell command output.
-5. **Regenerate the HTML** — the reviewer's comments and unflagged items persist in localStorage, so they won't lose work. The updated evidence blocks will reflect the corrected understanding.
-6. Tell the reviewer the page is updated and they can continue.
+5. **Add a top-level `note` artifact titled `Prior inline feedback answers`** whenever the reviewer pasted inline comments or prior flagged observations. This note must explicitly answer every pasted comment, including whether it was resolved by a code change, resolved by explanation, left unresolved for follow-up, or intentionally not changed. Treat answered items as resolved in the refreshed review: do not keep re-presenting them as open questions unless they still require action. If the HTML UI supports hiding/resolving prior comments, mark answered comments resolved; otherwise the note is the source of truth for resolved vs unresolved prior feedback.
+6. **Regenerate the HTML** — the reviewer's comments and unflagged items persist in localStorage, so they won't lose work. The updated evidence blocks and prior-feedback answers will reflect the corrected understanding.
+7. Tell the reviewer the page is updated and call out any comments that remain unresolved.
 
 This loop can happen multiple times. Each time, the AI's understanding improves and the observations get more accurate.
 
