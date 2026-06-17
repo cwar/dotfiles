@@ -1,0 +1,5 @@
+# Ghostty main config (loaded automatically). Loads the portable base settings,
+# then applies a built-in Tokyo Night theme (replaces omarchy's theme-switch, which
+# used to append theme colors on Arch).
+config-file = base
+theme = TokyoNight Night

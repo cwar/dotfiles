@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# kde-term-run — open konsole running a command in an interactive shell so that
-# mise shims and ~/.local/bin are on PATH. KDE .desktop launches (used by global
-# shortcuts) do NOT source ~/.bashrc, so bare `lazygit`/`vpn`/`gum` wouldn't be
-# found; an interactive bash sources ~/.bashrc (mise activate + PATH) first.
-# Used by the kde-*.desktop launchers behind KDE global shortcuts.
+# kde-term-run — open ghostty running a command in an interactive shell, so mise shims
+# and ~/.local/bin are on PATH (KDE .desktop launches don't source ~/.bashrc). The `-e`
+# also overrides ghostty's `command = tmux`, so the tool runs directly (not inside tmux).
+# Used by the kde-*.desktop launchers behind KDE global shortcuts (lazygit, vpn, ...).
 # shellcheck disable=SC2016  # inner $@ is for the spawned interactive bash, intentionally unexpanded here
-exec konsole -e bash -ic 'exec "$@"' bash "$@"
+exec ghostty -e bash -ic 'exec "$@"' bash "$@"

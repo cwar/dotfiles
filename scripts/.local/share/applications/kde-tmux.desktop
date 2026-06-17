@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Terminal — tmux
-Comment=Konsole running a new tmux session
-Exec=/home/cwar/.local/bin/kde-term-run tmux new
-Icon=utilities-terminal
+Name=Terminal (ghostty + tmux)
+Comment=Ghostty terminal — auto-starts tmux per ghostty config (command = tmux)
+Exec=ghostty
+Icon=com.mitchellh.ghostty
 Terminal=false
 Categories=System;TerminalEmulator;
