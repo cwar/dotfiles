@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# kde-term-run — open konsole running a command in an interactive shell so that
+# mise shims and ~/.local/bin are on PATH. KDE .desktop launches (used by global
+# shortcuts) do NOT source ~/.bashrc, so bare `lazygit`/`vpn`/`gum` wouldn't be
+# found; an interactive bash sources ~/.bashrc (mise activate + PATH) first.
+# Used by the kde-*.desktop launchers behind KDE global shortcuts.
+# shellcheck disable=SC2016  # inner $@ is for the spawned interactive bash, intentionally unexpanded here
+exec konsole -e bash -ic 'exec "$@"' bash "$@"

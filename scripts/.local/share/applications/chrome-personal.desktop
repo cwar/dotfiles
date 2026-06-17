@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Chrome (Personal)
+Comment=Google Chrome — personal profile
+Exec=/usr/bin/google-chrome --profile-directory="Profile 1"
+Icon=google-chrome
+Terminal=false
+Categories=Network;WebBrowser;

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Google Calendar
+Comment=Google Calendar (Chrome app window, work profile)
+Exec=/usr/bin/google-chrome --app=https://calendar.google.com --profile-directory="Default"
+Icon=google-chrome
+Terminal=false
+Categories=Network;Office;

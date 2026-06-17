@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Gmail
+Comment=Gmail (Chrome app window, work profile)
+Exec=/usr/bin/google-chrome --app=https://mail.google.com --profile-directory="Default"
+Icon=google-chrome
+Terminal=false
+Categories=Network;Office;

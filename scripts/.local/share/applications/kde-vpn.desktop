@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=VPN (GlobalProtect)
+Comment=GlobalProtect/Tailscale VPN TUI
+Exec=/home/cwar/.local/bin/kde-term-run /home/cwar/.local/bin/vpn
+Icon=network-vpn
+Terminal=false
+Categories=Network;

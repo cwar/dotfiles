@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal — tmux
+Comment=Konsole running a new tmux session
+Exec=/home/cwar/.local/bin/kde-term-run tmux new
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
