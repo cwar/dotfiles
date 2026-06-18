@@ -1,0 +1,14 @@
+[Unit]
+Description=Waybar (Wayland status bar)
+Documentation=https://github.com/Alexays/Waybar/wiki
+PartOf=graphical-session.target
+After=graphical-session.target plasma-kwin_wayland.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/waybar -c %h/.config/waybar/config-kde.jsonc -s %h/.config/waybar/style-kde.css
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

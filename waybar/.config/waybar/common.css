@@ -1,0 +1,39 @@
+/* Shared Waybar styling. Imported by style-kde.css and style-hypr.css. */
+* {
+  font-family: "JetBrainsMono Nerd Font", "Symbols Nerd Font Mono", monospace;
+  font-size: 13px;
+}
+
+window#waybar {
+  background: rgba(26, 27, 35, 0.95);
+  color: #f8f8f2;
+  margin-left: 8px;
+}
+
+#clock, #battery, #wireplumber, #tray, #network, #disk {
+  padding: 0 6px;
+}
+
+#battery.charging {
+  color: #50fa7b;
+}
+
+#battery.warning:not(.charging) {
+  color: #f1fa8c;
+}
+
+#battery.critical:not(.charging) {
+  color: #ff5555;
+}
+
+#disk.warning {
+  color: #f1fa8c;
+}
+
+#disk.critical {
+  color: #ff5555;
+}
+
+#network.disconnected {
+  color: #ff5555;
+}

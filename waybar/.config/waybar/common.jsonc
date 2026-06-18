@@ -1,0 +1,47 @@
+{
+  // Shared Waybar base + modules common to every environment.
+  // Included by config-kde.jsonc and config-hypr.jsonc via "include".
+  // NOTE: do NOT define modules-left/center/right here -- layout is per-env.
+  "layer": "top",
+  "position": "top",
+  "height": 30,
+  "spacing": 4,
+
+  "clock": {
+    "format": "{:%a %b %d  %I:%M %p}"
+  },
+
+  "battery": {
+    "format": "{capacity}%",
+    "format-charging": "⚡ {capacity}%"
+  },
+
+  "disk": {
+    "path": "/",
+    "format": "󰋊 / {percentage_used}%",
+    "tooltip-format": "Root: {used} / {total}",
+    "interval": 30,
+    "states": {
+      "warning": 75,
+      "critical": 90
+    }
+  },
+
+  "wireplumber": {
+    "format": "🔊 {volume}%",
+    "format-muted": "🔇",
+    "on-click": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+  },
+
+  "tray": {
+    "spacing": 10
+  },
+
+  "network": {
+    "format-wifi": "📶",
+    "format-ethernet": "🌐 {ipaddr}",
+    "format-disconnected": "❌ Offline",
+    "tooltip-format": "{ifname}: {ipaddr}",
+    "on-click": "ghostty -e nmtui"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  // Omarchy / Hyprland layout (Arch). This is the original Omarchy bar,
+  // refactored to share modules via common.jsonc. On Omarchy, waybar is
+  // launched with no args and reads config.jsonc -> (symlink) config-hypr.jsonc.
+  "include": ["/home/cwar/.config/waybar/common.jsonc"],
+
+  "modules-left": ["hyprland/workspaces"],
+  "modules-center": ["custom/sysupdate", "clock"],
+  "modules-right": ["disk", "disk#extra", "network", "wireplumber", "battery", "tray"],
+
+  "hyprland/workspaces": {
+    "format": "{id}"
+  },
+
+  "custom/sysupdate": {
+    "exec": "~/.local/bin/sysupdate-check",
+    "return-type": "json",
+    "interval": 3600,
+    "on-click": "~/.local/bin/sysupdate-launch",
+    "signal": 8
+  },
+
+  "disk#extra": {
+    "path": "/mnt/extradrive1",
+    "format": "󰋊 ex {percentage_used}%",
+    "tooltip-format": "Extra: {used} / {total}",
+    "interval": 30,
+    "states": {
+      "warning": 75,
+      "critical": 90
+    }
+  }
+}

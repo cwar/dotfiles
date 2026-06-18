@@ -1,0 +1,38 @@
+{
+  // KDE Plasma (Wayland / KWin) layout. Launched explicitly by the
+  // waybar.service systemd unit:  waybar -c config-kde.jsonc -s style-kde.css
+  //
+  // Workspaces = KWin virtual desktops via a custom daemon + per-desktop
+  // clickable modules (occupied-only). See scripts/kwin-workspaces and
+  // scripts/kwin-occupancy.js.
+  "include": ["/home/cwar/.config/waybar/common.jsonc"],
+
+  "modules-left": [
+    "custom/kwin-daemon",
+    "custom/ws0", "custom/ws1", "custom/ws2", "custom/ws3", "custom/ws4",
+    "custom/ws5", "custom/ws6", "custom/ws7", "custom/ws8", "custom/ws9",
+    "custom/ws10"
+  ],
+  "modules-center": ["clock"],
+  "modules-right": ["disk", "network", "wireplumber", "battery", "tray"],
+
+  // Hidden supervisor: hosts the org.waybar.Kwin D-Bus service, loads the KWin
+  // script, writes the shared state file, and signals waybar (SIGRTMIN+1).
+  "custom/kwin-daemon": {
+    "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces daemon",
+    "return-type": "json",
+    "restart-interval": 5
+  },
+
+  "custom/ws0": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 0", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 0", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws1": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 1", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 1", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws2": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 2", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 2", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws3": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 3", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 3", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws4": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 4", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 4", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws5": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 5", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 5", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws6": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 6", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 6", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws7": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 7", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 7", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws8": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 8", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 8", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws9": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 9", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 9", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" },
+  "custom/ws10": { "exec": "/home/cwar/.config/waybar/scripts/kwin-workspaces render 10", "return-type": "json", "interval": 3, "signal": 1, "on-click": "/home/cwar/.config/waybar/scripts/kwin-workspaces goto 10", "on-scroll-up": "/home/cwar/.config/waybar/scripts/kwin-workspaces prev", "on-scroll-down": "/home/cwar/.config/waybar/scripts/kwin-workspaces next" }
+}

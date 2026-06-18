@@ -1,0 +1,28 @@
+@import url("common.css");
+
+/* Hyprland: native hyprland/workspaces buttons */
+#workspaces button {
+  padding: 0 8px;
+  color: #6272a4;
+  background: transparent;
+  border: none;
+}
+
+#workspaces button.active {
+  color: #f8f8f2;
+  background: #44475a;
+  border-radius: 4px;
+}
+
+#workspaces button:hover {
+  background: #44475a;
+  border-radius: 4px;
+}
+
+#custom-sysupdate {
+  padding: 0 6px;
+}
+
+#custom-sysupdate.has-updates {
+  color: #f1fa8c;
+}

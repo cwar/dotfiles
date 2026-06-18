@@ -1,0 +1,20 @@
+@import url("common.css");
+
+/* KDE: per-desktop workspace buttons (custom/ws0..ws10) */
+.ws {
+  padding: 0 8px;
+  color: #6272a4;
+  background: transparent;
+}
+
+.ws.active {
+  color: #f8f8f2;
+  background: #44475a;
+  border-radius: 4px;
+}
+
+.ws:hover {
+  color: #f8f8f2;
+  background: #44475a;
+  border-radius: 4px;
+}
