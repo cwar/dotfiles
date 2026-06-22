@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# sysupdate-launch — Waybar on-click handler for the custom/sysupdate module.
+#
+# Waybar runs this with no controlling terminal, so we re-exec ourselves inside
+# a Ghostty window (guarded by SYSUPDATE_IN_TERM) and run the interactive update
+# there. Updates every package manager present on this box, priming sudo ONCE so
+# apt + snap don't each prompt, then signals Waybar (SIGRTMIN+8) to re-check.
+#
+# Ported from the Omarchy/Arch `update-all`; the orchestration (single sudo,
+# per-manager isolation, bar refresh) is the same, the commands are Ubuntu's.
+
+self=$(readlink -f "$0")
+here=$(dirname "$self")
+CHECK="$here/sysupdate-check"
+
+TERMINAL=${TERMINAL:-ghostty}
+
+# prepend_mise_shims: make mise-managed node/npm (and the globals they own, e.g.
+# pi) resolvable. Waybar/systemd don't source ~/.bashrc where `mise activate`
+# runs, so without this `have npm` is false and the `npm update -g` step is
+# skipped. Exported before the re-exec so the terminal child inherits it too.
+# Idempotent; honours $MISE_SHIMS to allow testing.
+prepend_mise_shims() {
+  local shims=${MISE_SHIMS:-$HOME/.local/share/mise/shims}
+  [[ -d $shims ]] || return 0
+  case ":$PATH:" in
+    *":$shims:"*) ;;
+    *)
+      PATH="$shims:$PATH"
+      export PATH
+      ;;
+  esac
+}
+prepend_mise_shims
+
+# ---- terminal re-exec -------------------------------------------------------
+
+if [[ -z ${SYSUPDATE_IN_TERM:-} ]]; then
+  if command -v "$TERMINAL" >/dev/null 2>&1; then
+    exec "$TERMINAL" --title="System Update" -e \
+      env SYSUPDATE_IN_TERM=1 "$self"
+  elif command -v konsole >/dev/null 2>&1; then
+    exec konsole -e env SYSUPDATE_IN_TERM=1 "$self"
+  else
+    # No terminal — run headless (best effort, no prompts).
+    SYSUPDATE_IN_TERM=1 SYSUPDATE_HEADLESS=1 exec "$self"
+  fi
+fi
+
+# ---- helpers ----------------------------------------------------------------
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+rule() { printf '\033[2m%s\033[0m\n' "────────────────────────────────────────"; }
+
+FAILED=()
+
+# run_step NAME CMD...: run an upgrade step, isolated so one failure doesn't
+# abort the rest. Records failures for the final summary.
+run_step() {
+  local name=$1
+  shift
+  rule
+  bold "▶ $name"
+  if "$@"; then
+    return 0
+  fi
+  printf '\033[31m✗ %s failed (continuing)\033[0m\n' "$name"
+  FAILED+=("$name")
+  return 0
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+confirm() {
+  local prompt=$1
+  if [[ -n ${SYSUPDATE_HEADLESS:-} ]]; then
+    return 0
+  fi
+  if have gum; then
+    gum confirm "$prompt"
+    return $?
+  fi
+  local reply
+  printf '%s [y/N] ' "$prompt"
+  read -r reply || return 1
+  [[ $reply == [yY]* ]]
+}
+
+# keep sudo credentials warm for the duration of the run
+SUDO_KEEPALIVE_PID=""
+prime_sudo() {
+  have sudo || return 0
+  bold "Priming sudo (one prompt for the whole run)…"
+  sudo -v || return 1
+  (while true; do
+    sudo -n true 2>/dev/null || exit
+    sleep 50
+  done) &
+  SUDO_KEEPALIVE_PID=$!
+}
+cleanup() {
+  [[ -n $SUDO_KEEPALIVE_PID ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+}
+trap cleanup EXIT
+
+# ---- main flow --------------------------------------------------------------
+
+clear 2>/dev/null || true
+bold "System update"
+rule
+dim "Pending updates:"
+"$CHECK" --summary || true
+echo
+
+if ! confirm "Run system update across all package managers?"; then
+  dim "Cancelled."
+  exit 0
+fi
+
+# Whether we need root at all (apt/snap). Prime once if so.
+if have apt || have snap; then
+  prime_sudo || {
+    printf '\033[31mCould not obtain sudo; apt/snap will be skipped.\033[0m\n'
+  }
+fi
+
+if have apt && [[ -n $SUDO_KEEPALIVE_PID ]]; then
+  run_step "apt" bash -c 'sudo apt update && sudo apt full-upgrade -y && sudo apt autoremove -y'
+fi
+
+if have flatpak; then
+  run_step "flatpak" flatpak update -y
+fi
+
+if have snap && [[ -n $SUDO_KEEPALIVE_PID ]]; then
+  run_step "snap" sudo snap refresh
+fi
+
+if have brew; then
+  run_step "Homebrew" bash -c 'brew update && brew upgrade'
+fi
+
+if have npm; then
+  run_step "npm (global)" npm update -g
+fi
+
+if have mise; then
+  run_step "mise" mise upgrade
+fi
+
+rule
+if ((${#FAILED[@]} == 0)); then
+  bold "✓ All updates complete."
+  have notify-send && notify-send "System update" "All package managers updated." 2>/dev/null || true
+else
+  printf '\033[33m⚠ Completed with failures: %s\033[0m\n' "${FAILED[*]}"
+  have notify-send && notify-send "System update" "Completed with failures: ${FAILED[*]}" 2>/dev/null || true
+fi
+
+# Refresh the Waybar indicator immediately (custom/sysupdate uses signal 8).
+pkill -RTMIN+8 waybar 2>/dev/null || true
+
+if [[ -z ${SYSUPDATE_HEADLESS:-} ]]; then
+  echo
+  dim "Press Enter to close…"
+  read -r _ || true
+fi

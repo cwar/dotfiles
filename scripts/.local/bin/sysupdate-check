@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# sysupdate-check — detect available system updates across every package
+# manager on this box and emit a Waybar JSON object (the "cycle" icon).
+#
+# Ported from the Omarchy/Arch `updates-available` indicator to an
+# Ubuntu LTS fleet: apt, flatpak, snap, Homebrew, npm (global), mise.
+#
+# Modes:
+#   (no args)    Print one Waybar JSON line: {text, tooltip, class}
+#   --summary    Human per-manager breakdown on stdout (used by sysupdate-launch)
+#   --self-test  Run internal unit tests and exit
+#
+# Waybar wiring (custom/sysupdate, return-type "json", signal 8):
+#   - no updates  -> empty text, so the module is HIDDEN entirely
+#   - updates     -> yellow "<glyph> N", class "has-updates"
+#
+# Phased apt updates (held back by Ubuntu's staged rollout) are NOT counted and
+# NOT reported: they aren't actionable and roll out automatically. count_apt
+# simulates the real upgrade plan, which already excludes them.
+#
+# Notes on safety: this runs unattended (hourly + on SIGRTMIN+8). It NEVER
+# uses sudo and NEVER refreshes apt's package lists (that needs root + net and
+# is handled by the apt-daily timer). Each network-touching manager is wrapped
+# in `timeout` and run in parallel so the bar never blocks for long.
+
+ICON=$'\uf021' # nf-fa-refresh — the "cycle" glyph
+
+# prepend_mise_shims: make mise-managed tools (node, npm, and the globals they
+# own — e.g. pi) resolvable in NON-interactive environments. Waybar runs as a
+# systemd user service and never sources ~/.bashrc, where `mise activate` lives,
+# so node/npm aren't on PATH and count_npm() is silently skipped. mise shims
+# self-resolve the active version, so adding the dir is sufficient. Idempotent;
+# honours $MISE_SHIMS to allow testing.
+prepend_mise_shims() {
+  local shims=${MISE_SHIMS:-$HOME/.local/share/mise/shims}
+  [[ -d $shims ]] || return 0
+  case ":$PATH:" in
+    *":$shims:"*) ;;
+    *)
+      PATH="$shims:$PATH"
+      export PATH
+      ;;
+  esac
+}
+
+# ---- counting helpers -------------------------------------------------------
+
+# count_apt: packages apt would ACTUALLY upgrade right now (no sudo, no net).
+# We simulate `full-upgrade` and count `Inst` lines instead of using
+# `apt list --upgradable`, because the latter also lists packages that Ubuntu's
+# phased-update rollout is deliberately holding back. Counting the real plan is
+# what lets the indicator clear after an update completes.
+count_apt() {
+  command -v apt-get >/dev/null 2>&1 || return 0
+  apt-get -s full-upgrade 2>/dev/null | grep -c '^Inst' || true
+}
+
+# count_flatpak: applications with a pending update.
+count_flatpak() {
+  command -v flatpak >/dev/null 2>&1 || return 0
+  timeout 20 flatpak remote-ls --updates --columns=application 2>/dev/null |
+    grep -c . || true
+}
+
+# count_snap: snaps with a pending refresh.
+count_snap() {
+  command -v snap >/dev/null 2>&1 || return 0
+  local out
+  out=$(timeout 20 snap refresh --list 2>/dev/null) || true
+  # "All snaps up to date." => 0; otherwise a "Name Version ..." header + rows.
+  if printf '%s\n' "$out" | grep -q '^Name'; then
+    printf '%s\n' "$out" | grep -cvE '^(Name|$)' || true
+  else
+    printf '0\n'
+  fi
+}
+
+# count_brew: outdated formulae/casks (uses last fetch; fast, no net).
+count_brew() {
+  command -v brew >/dev/null 2>&1 || return 0
+  timeout 30 brew outdated --quiet 2>/dev/null | grep -c . || true
+}
+
+# count_npm: globally-installed npm packages with a newer version.
+count_npm() {
+  command -v npm >/dev/null 2>&1 || return 0
+  timeout 30 npm outdated -g --parseable 2>/dev/null | grep -c . || true
+}
+
+# count_mise: tools mise can upgrade.
+count_mise() {
+  command -v mise >/dev/null 2>&1 || return 0
+  # `mise outdated` prints a "Tool ..." header followed by one row per tool.
+  timeout 30 mise outdated 2>/dev/null | grep -cvE '^(Tool|$)' || true
+}
+
+# normalize: turn possibly-empty / multiline output into a single integer.
+normalize() {
+  local n=${1:-0}
+  n=${n//[!0-9]/}
+  printf '%d\n' "$((10#${n:-0}))"
+}
+
+# ---- detection orchestration ------------------------------------------------
+
+# detect: populate the global associative array COUNTS[manager]=N, running the
+# per-manager checks in parallel. Only managers that exist are included.
+declare -A COUNTS=()
+declare -A LABELS=(
+  [apt]="apt" [flatpak]="flatpak" [snap]="snap"
+  [brew]="brew" [npm]="npm -g" [mise]="mise"
+)
+ORDER=(apt flatpak snap brew npm mise)
+
+detect() {
+  prepend_mise_shims
+  local tmp
+  tmp=$(mktemp -d) || return 1
+
+  local m
+  for m in "${ORDER[@]}"; do
+    normalize "$("count_${m}")" >"$tmp/$m" &
+  done
+  wait
+
+  for m in "${ORDER[@]}"; do
+    [[ -s "$tmp/$m" ]] && COUNTS[$m]=$(<"$tmp/$m")
+  done
+
+  rm -rf "$tmp"
+}
+
+# total: sum of all manager counts.
+total() {
+  local sum=0 m
+  for m in "${!COUNTS[@]}"; do
+    sum=$((sum + COUNTS[$m]))
+  done
+  printf '%d\n' "$sum"
+}
+
+# build_lines: one "label: count" line per manager that has a non-zero count.
+# Used by the JSON tooltip and the --summary output so they stay consistent.
+build_lines() {
+  local m c
+  for m in "${ORDER[@]}"; do
+    c=${COUNTS[$m]:-0}
+    ((c > 0)) || continue
+    printf '%s: %s\n' "${LABELS[$m]}" "$c"
+  done
+}
+
+# ---- output modes -----------------------------------------------------------
+
+emit_json() {
+  detect
+  local sum
+  sum=$(total)
+
+  if ((sum == 0)); then
+    # Nothing actionable -> empty text hides the module entirely.
+    printf '{"text":""}\n'
+    return 0
+  fi
+
+  local text tooltip class
+  text="$ICON $sum"
+  class="has-updates"
+  tooltip="$sum update(s) available"$'\n'"$(build_lines)"
+
+  jq -cn --arg text "$text" --arg tooltip "$tooltip" --arg class "$class" \
+    '{text: $text, tooltip: $tooltip, class: $class}'
+}
+
+emit_summary() {
+  detect
+  local m
+  for m in "${ORDER[@]}"; do
+    [[ -n ${COUNTS[$m]+x} ]] || continue
+    printf '%-10s %s\n' "${LABELS[$m]}" "${COUNTS[$m]}"
+  done
+}
+
+# ---- self test --------------------------------------------------------------
+
+self_test() {
+  local fails=0
+  check() {
+    local desc=$1 got=$2 want=$3
+    if [[ $got == "$want" ]]; then
+      printf 'ok   - %s\n' "$desc"
+    else
+      printf 'FAIL - %s (got %q want %q)\n' "$desc" "$got" "$want"
+      fails=$((fails + 1))
+    fi
+  }
+
+  check "normalize empty" "$(normalize "")" "0"
+  check "normalize plain int" "$(normalize "7")" "7"
+  check "normalize trailing nl" "$(normalize $'3\n')" "3"
+  check "normalize junk" "$(normalize "x12y")" "12"
+  check "normalize zero-padded" "$(normalize "08")" "8"
+
+  # prepend_mise_shims(): prepends the shims dir to PATH when it exists, and is
+  # idempotent (a second call must not add it twice).
+  local _saved_path=$PATH _shimdir _got1 _got2
+  _shimdir=$(mktemp -d)
+  PATH=/usr/bin
+  MISE_SHIMS=$_shimdir
+  prepend_mise_shims
+  _got1=$PATH
+  prepend_mise_shims
+  _got2=$PATH
+  PATH=$_saved_path
+  unset MISE_SHIMS
+  rm -rf "$_shimdir"
+  check "prepend_mise_shims prepends shims dir" "$_got1" "$_shimdir:/usr/bin"
+  check "prepend_mise_shims is idempotent" "$_got2" "$_shimdir:/usr/bin"
+
+  # total() over a synthetic COUNTS map.
+  COUNTS=([apt]=2 [snap]=0 [brew]=5)
+  check "total sums counts" "$(total)" "7"
+  COUNTS=()
+  check "total empty is zero" "$(total)" "0"
+
+  # build_lines(): only managers with a non-zero count appear.
+  COUNTS=([apt]=3 [snap]=0 [brew]=1)
+  check "build_lines skips zero counts" "$(build_lines)" "$(printf 'apt: 3\nbrew: 1')"
+  COUNTS=()
+  check "build_lines empty when nothing" "$(build_lines)" ""
+
+  # JSON shape with a forced count.
+  COUNTS=([apt]=3)
+  local json
+  json=$(
+    sum=3
+    text="$ICON 3"
+    jq -cn --arg text "$text" --arg tooltip "t" --arg class "has-updates" \
+      '{text:$text,tooltip:$tooltip,class:$class}'
+  )
+  check "json is valid" "$(printf '%s' "$json" | jq -r '.class')" "has-updates"
+  check "json text has count" "$(printf '%s' "$json" | jq -r '.text' | grep -o '3$')" "3"
+
+  printf '\n%d failure(s)\n' "$fails"
+  return "$fails"
+}
+
+# ---- main -------------------------------------------------------------------
+
+case "${1:-}" in
+  --summary) emit_summary ;;
+  --self-test) self_test ;;
+  "") emit_json ;;
+  *)
+    printf 'usage: %s [--summary|--self-test]\n' "${0##*/}" >&2
+    exit 2
+    ;;
+esac
