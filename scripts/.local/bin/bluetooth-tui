@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Launch the Omarchy-style Bluetooth TUI on this KDE/Ubuntu machine.
+# Omarchy's wrapper does two things: unblock Bluetooth, then exec bluetui.
+# This version also powers the adapter on when bluetoothctl is available and
+# uses the cargo-installed bluetui binary if ~/.cargo/bin is not on PATH.
+
+find_bluetui() {
+  if [[ -n "${BLUETUI_BIN:-}" ]]; then
+    printf '%s\n' "$BLUETUI_BIN"
+    return 0
+  fi
+
+  if command -v bluetui >/dev/null 2>&1; then
+    command -v bluetui
+    return 0
+  fi
+
+  if [[ -x "$HOME/.cargo/bin/bluetui" ]]; then
+    printf '%s\n' "$HOME/.cargo/bin/bluetui"
+    return 0
+  fi
+
+  return 1
+}
+
+warn() {
+  printf 'bluetooth-tui: %s\n' "$*" >&2
+}
+
+if command -v rfkill >/dev/null 2>&1; then
+  rfkill unblock bluetooth 2>/dev/null || warn "could not unblock Bluetooth with rfkill"
+fi
+
+if command -v bluetoothctl >/dev/null 2>&1; then
+  bluetoothctl power on >/dev/null 2>&1 || true
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  if ! systemctl is-active --quiet bluetooth.service 2>/dev/null; then
+    warn "bluetooth.service is not active; start it with: sudo systemctl enable --now bluetooth.service"
+  fi
+fi
+
+bluetui_bin=$(find_bluetui) || {
+  warn "bluetui is not installed. Install it with: cargo install bluetui --locked"
+  exit 127
+}
+
+exec "$bluetui_bin" "$@"

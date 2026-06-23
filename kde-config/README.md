@@ -26,3 +26,18 @@ back here and commit.
 ## Gotcha
 `Meta+Shift+<digit>` shortcuts are dead on KDE Wayland (Shift→symbol; GUI can't capture
 them). That's why move-to-workspace uses `Meta+Alt+<digit>`, not `Meta+Shift+<digit>`.
+
+When creating a new `.desktop` launcher shortcut through KGlobalAccel DBus, don't stop at
+`doRegister` + `setForeignShortcut` (or `setShortcut` with flags `0`). That can make the
+shortcut appear in System Settings while the component remains inactive, so physical keypresses
+never fire even though `invokeShortcut` works. Mark the action present with `setShortcut(..., flags=2)`
+where `2` is KDE's private `SetPresent` flag, then verify:
+
+```bash
+gdbus call --session --dest org.kde.kglobalaccel --object-path /component/<component_path> \
+  --method org.kde.kglobalaccel.Component.isActive
+```
+
+Expected result is `(true,)`. The Bluetooth TUI launcher exposed this: it showed
+`Meta+Ctrl+B` / `Meta+Alt+B` / `Meta+F8` in Settings, but did not launch until `SetPresent`
+was applied.
