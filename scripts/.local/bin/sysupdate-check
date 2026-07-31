@@ -27,6 +27,14 @@ set -uo pipefail
 
 ICON=$'\uf021' # nf-fa-refresh — the "cycle" glyph
 
+# Per-manager wall-clock budget. Overridable so --self-test can use a tiny value.
+: "${SYSUPDATE_TIMEOUT:=30}"
+
+# ERR is the sentinel for "this check could not complete". It must stay distinct
+# from 0: collapsing the two is what silently dropped brew from the bar, because
+# a killed check and a clean check produced the same count.
+ERR_SENTINEL=ERR
+
 # prepend_mise_shims: make mise-managed tools (node, npm, and the globals they
 # own — e.g. pi) resolvable in NON-interactive environments. Waybar runs as a
 # systemd user service and never sources ~/.bashrc, where `mise activate` lives,
@@ -47,6 +55,25 @@ prepend_mise_shims() {
 
 # ---- counting helpers -------------------------------------------------------
 
+# timed_count CMD...: run CMD under $SYSUPDATE_TIMEOUT and print how many lines
+# it produced, or ERR if the timeout fired (124 = killed by timeout, 137 =
+# SIGKILL after --kill-after).
+#
+# The command's OWN exit status is deliberately ignored: several of these tools
+# exit non-zero precisely *because* they found updates (`npm outdated` exits 1),
+# so treating any non-zero status as failure would misreport a normal result.
+# Only a fired timeout is a real failure.
+timed_count() {
+  local out rc
+  out=$(timeout "$SYSUPDATE_TIMEOUT" "$@" 2>/dev/null)
+  rc=$?
+  if ((rc == 124 || rc == 137)); then
+    printf '%s\n' "$ERR_SENTINEL"
+    return 0
+  fi
+  printf '%s\n' "$out" | grep -c . || true
+}
+
 # count_apt: packages apt would ACTUALLY upgrade right now (no sudo, no net).
 # We simulate `full-upgrade` and count `Inst` lines instead of using
 # `apt list --upgradable`, because the latter also lists packages that Ubuntu's
@@ -57,11 +84,41 @@ count_apt() {
   apt-get -s full-upgrade 2>/dev/null | grep -c '^Inst' || true
 }
 
-# count_flatpak: applications with a pending update.
+# flatpak_remote_commit_is_installed_parent: true when Flatpak's remote
+# "update" commit is actually the installed commit's parent. Flatpak refuses to
+# deploy those with "Update is older than current version", so they are not
+# actionable updates and should not keep the Waybar indicator lit.
+flatpak_remote_commit_is_installed_parent() {
+  local installed_parent=${1:-} remote_commit=${2:-}
+  [[ -n $installed_parent && -n $remote_commit && $installed_parent == "$remote_commit"* ]]
+}
+
+flatpak_installed_parent_for_ref() {
+  local ref=$1 kind name _arch branch info
+  IFS=/ read -r kind name _arch branch <<<"$ref"
+  [[ -n ${kind:-} && -n ${name:-} && -n ${branch:-} ]] || return 1
+
+  info=$(flatpak info "$name" "$branch" 2>/dev/null) || return 1
+  awk '$1 == "Parent:" { print $2; exit }' <<<"$info"
+}
+
+# count_flatpak: Flatpak refs with a pending, actionable update.
 count_flatpak() {
   command -v flatpak >/dev/null 2>&1 || return 0
-  timeout 20 flatpak remote-ls --updates --columns=application 2>/dev/null |
-    grep -c . || true
+
+  local ref _origin commit parent count=0
+  while IFS=$'\t' read -r ref _origin commit; do
+    [[ -n ${ref:-} && -n ${commit:-} ]] || continue
+
+    parent=$(flatpak_installed_parent_for_ref "$ref") || parent=""
+    if flatpak_remote_commit_is_installed_parent "$parent" "$commit"; then
+      continue
+    fi
+
+    count=$((count + 1))
+  done < <(timeout 20 flatpak remote-ls --updates --columns=ref,origin,commit 2>/dev/null || true)
+
+  printf '%d\n' "$count"
 }
 
 # count_snap: snaps with a pending refresh.
@@ -77,16 +134,25 @@ count_snap() {
   fi
 }
 
-# count_brew: outdated formulae/casks (uses last fetch; fast, no net).
+# count_brew: outdated formulae/casks, from the LAST tap fetch — no network.
+#
+# HOMEBREW_NO_AUTO_UPDATE=1 is load-bearing. Without it, `brew outdated` quietly
+# triggers Homebrew's auto-update whenever the last fetch is older than
+# HOMEBREW_AUTO_UPDATE_SECS (default 86400). That cold path re-fetches every tap,
+# routinely overran the timeout, and — because a killed check used to read as 0 —
+# made brew disappear from the bar for the first poll of each day.
+# sysupdate-launch owns the network refresh via `brew update`.
 count_brew() {
   command -v brew >/dev/null 2>&1 || return 0
-  timeout 30 brew outdated --quiet 2>/dev/null | grep -c . || true
+  timed_count env HOMEBREW_NO_AUTO_UPDATE=1 brew outdated --quiet
 }
 
 # count_npm: globally-installed npm packages with a newer version.
+# NB: `npm outdated` exits 1 when it finds anything, which is why timed_count
+# ignores tool exit status.
 count_npm() {
   command -v npm >/dev/null 2>&1 || return 0
-  timeout 30 npm outdated -g --parseable 2>/dev/null | grep -c . || true
+  timed_count npm outdated -g --parseable
 }
 
 # count_mise: tools mise can upgrade.
@@ -99,6 +165,11 @@ count_mise() {
 # normalize: turn possibly-empty / multiline output into a single integer.
 normalize() {
   local n=${1:-0}
+  # Preserve the failure sentinel; everything else becomes an integer.
+  if [[ $n == *"$ERR_SENTINEL"* ]]; then
+    printf '%s\n' "$ERR_SENTINEL"
+    return 0
+  fi
   n=${n//[!0-9]/}
   printf '%d\n' "$((10#${n:-0}))"
 }
@@ -132,13 +203,24 @@ detect() {
   rm -rf "$tmp"
 }
 
-# total: sum of all manager counts.
+# total: sum of all manager counts. Failed checks contribute nothing (their real
+# count is unknown) but are surfaced separately via has_error.
 total() {
   local sum=0 m
   for m in "${!COUNTS[@]}"; do
+    [[ ${COUNTS[$m]} == "$ERR_SENTINEL" ]] && continue
     sum=$((sum + COUNTS[$m]))
   done
   printf '%d\n' "$sum"
+}
+
+# has_error: true when at least one manager's check failed to complete.
+has_error() {
+  local m
+  for m in "${!COUNTS[@]}"; do
+    [[ ${COUNTS[$m]} == "$ERR_SENTINEL" ]] && return 0
+  done
+  return 1
 }
 
 # build_lines: one "label: count" line per manager that has a non-zero count.
@@ -147,6 +229,10 @@ build_lines() {
   local m c
   for m in "${ORDER[@]}"; do
     c=${COUNTS[$m]:-0}
+    if [[ $c == "$ERR_SENTINEL" ]]; then
+      printf '%s: check failed\n' "${LABELS[$m]}"
+      continue
+    fi
     ((c > 0)) || continue
     printf '%s: %s\n' "${LABELS[$m]}" "$c"
   done
@@ -159,7 +245,7 @@ emit_json() {
   local sum
   sum=$(total)
 
-  if ((sum == 0)); then
+  if ((sum == 0)) && ! has_error; then
     # Nothing actionable -> empty text hides the module entirely.
     printf '{"text":""}\n'
     return 0
@@ -167,8 +253,15 @@ emit_json() {
 
   local text tooltip class
   text="$ICON $sum"
-  class="has-updates"
-  tooltip="$sum update(s) available"$'\n'"$(build_lines)"
+  if has_error; then
+    # Stay visible and turn red (#custom-sysupdate.error) so a broken check is
+    # never mistaken for "up to date".
+    class="error"
+    tooltip="$sum update(s) available — some checks failed"$'\n'"$(build_lines)"
+  else
+    class="has-updates"
+    tooltip="$sum update(s) available"$'\n'"$(build_lines)"
+  fi
 
   jq -cn --arg text "$text" --arg tooltip "$tooltip" --arg class "$class" \
     '{text: $text, tooltip: $tooltip, class: $class}'
@@ -176,10 +269,12 @@ emit_json() {
 
 emit_summary() {
   detect
-  local m
+  local m c
   for m in "${ORDER[@]}"; do
     [[ -n ${COUNTS[$m]+x} ]] || continue
-    printf '%-10s %s\n' "${LABELS[$m]}" "${COUNTS[$m]}"
+    c=${COUNTS[$m]}
+    [[ $c == "$ERR_SENTINEL" ]] && c="check failed"
+    printf '%-10s %s\n' "${LABELS[$m]}" "$c"
   done
 }
 
@@ -202,6 +297,36 @@ self_test() {
   check "normalize trailing nl" "$(normalize $'3\n')" "3"
   check "normalize junk" "$(normalize "x12y")" "12"
   check "normalize zero-padded" "$(normalize "08")" "8"
+  check "normalize keeps ERR sentinel" "$(normalize "ERR")" "ERR"
+
+  # timed_count(): only a fired timeout counts as failure. A non-zero exit from
+  # the tool itself must NOT, because `npm outdated` exits 1 precisely when it
+  # finds updates -- treating that as an error would misreport a normal result.
+  check "timed_count maps timeout to ERR" \
+    "$(SYSUPDATE_TIMEOUT=0.05 timed_count sleep 5)" "ERR"
+  check "timed_count counts lines despite tool exit 1" \
+    "$(timed_count sh -c 'printf "a\nb\n"; exit 1')" "2"
+  check "timed_count zero lines is 0 not ERR" \
+    "$(timed_count true)" "0"
+
+  # count_brew() must never trigger Homebrew's auto-update. That network path is
+  # what blew the timeout on a cold cache and made brew vanish from the bar.
+  local _brewdir _brew_got _brew_saved_path=$PATH
+  _brewdir=$(mktemp -d)
+  cat >"$_brewdir/brew" <<'FAKEBREW'
+#!/usr/bin/env bash
+if [ -z "${HOMEBREW_NO_AUTO_UPDATE:-}" ]; then
+  echo "auto-update-would-have-run"
+  exit 0
+fi
+printf 'formula-a\nformula-b\nformula-c\n'
+FAKEBREW
+  chmod +x "$_brewdir/brew"
+  PATH="$_brewdir:$PATH"
+  _brew_got=$(count_brew)
+  PATH=$_brew_saved_path
+  rm -rf "$_brewdir"
+  check "count_brew suppresses brew auto-update" "$_brew_got" "3"
 
   # prepend_mise_shims(): prepends the shims dir to PATH when it exists, and is
   # idempotent (a second call must not add it twice).
@@ -219,6 +344,20 @@ self_test() {
   check "prepend_mise_shims prepends shims dir" "$_got1" "$_shimdir:/usr/bin"
   check "prepend_mise_shims is idempotent" "$_got2" "$_shimdir:/usr/bin"
 
+  # Flatpak sometimes reports a remote "update" whose commit is actually the
+  # installed commit's parent. That is a downgrade, not an actionable update.
+  local _flatpak_parent=75a3afca1efc7dd75c34ba1873e08c39ddd0bd35b3901059985d08bc6474340a
+  local _flatpak_short=75a3afca1efc _flatpak_other=f92f0c46fce1
+  local _flatpak_match=no _flatpak_miss=yes
+  if flatpak_remote_commit_is_installed_parent "$_flatpak_parent" "$_flatpak_short"; then
+    _flatpak_match=yes
+  fi
+  if flatpak_remote_commit_is_installed_parent "$_flatpak_parent" "$_flatpak_other"; then
+    _flatpak_miss=no
+  fi
+  check "flatpak parent prefix is non-actionable" "$_flatpak_match" "yes"
+  check "flatpak unrelated commit stays actionable" "$_flatpak_miss" "yes"
+
   # total() over a synthetic COUNTS map.
   COUNTS=([apt]=2 [snap]=0 [brew]=5)
   check "total sums counts" "$(total)" "7"
@@ -230,6 +369,22 @@ self_test() {
   check "build_lines skips zero counts" "$(build_lines)" "$(printf 'apt: 3\nbrew: 1')"
   COUNTS=()
   check "build_lines empty when nothing" "$(build_lines)" ""
+
+  # A failed check must stay visible and must never be summed as 0 updates.
+  COUNTS=([apt]=2 [brew]=ERR)
+  check "total ignores ERR" "$(total)" "2"
+  check "has_error true when a check failed" \
+    "$(
+      has_error && echo yes || echo no
+    )" "yes"
+  check "build_lines surfaces failed check" \
+    "$(build_lines)" "$(printf 'apt: 2\nbrew: check failed')"
+  COUNTS=([apt]=2)
+  check "has_error false when all checks ran" \
+    "$(
+      has_error && echo yes || echo no
+    )" "no"
+  COUNTS=()
 
   # JSON shape with a forced count.
   COUNTS=([apt]=3)
