@@ -4,12 +4,18 @@
   "height": 30,
   "spacing": 4,
 
-  "modules-left": ["hyprland/workspaces"],
+  "modules-left": ["ext/workspaces"],
   "modules-center": ["custom/sysupdate", "clock"],
   "modules-right": ["disk", "disk#extra", "network", "wireplumber", "battery", "tray"],
 
-  "hyprland/workspaces": {
-    "format": "{id}"
+  // ext-workspace-v1 protocol instead of hyprland/workspaces: waybar's
+  // hyprland module hardcodes the legacy IPC string "dispatch workspace N",
+  // which Hyprland >=0.56 with a Lua config evaluates as Lua and rejects.
+  // "on-click": "activate" uses the Wayland protocol request instead.
+  "ext/workspaces": {
+    "format": "{name}",
+    "on-click": "activate",
+    "sort-by-name": true
   },
 
   "custom/sysupdate": {
