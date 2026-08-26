@@ -45,7 +45,7 @@ do_close() {
 
     # Don't trash windows already in a special workspace
     if (( ws_id < 0 )); then
-        hyprctl dispatch killactive
+        hyprctl dispatch "hl.dsp.window.close()"
         exit 0
     fi
 
@@ -58,12 +58,16 @@ do_close() {
         fi
     done
     if (( trashable == 0 )); then
-        hyprctl dispatch killactive
+        hyprctl dispatch "hl.dsp.window.close()"
         exit 0
     fi
 
-    # Move to trash workspace
-    hyprctl dispatch movetoworkspacesilent "$TRASH_WS" >/dev/null 2>&1
+    # Move to trash workspace.
+    # NOTE: the option is `follow = false`, NOT the legacy `silent = true`.
+    # Hyprland's Lua dispatcher API silently ignores unknown option keys, so a
+    # wrong name doesn't error — move just follows the window, which OPENS the
+    # special workspace as an on-top overlay and drags focus with it.
+    hyprctl dispatch "hl.dsp.window.move({ workspace = '$TRASH_WS', follow = false })" >/dev/null 2>&1
 
     # Log it
     jq -nc \
@@ -84,7 +88,7 @@ do_close() {
         head -n "$excess" "$TRASH_LOG" | while IFS= read -r entry; do
             local old_addr
             old_addr=$(echo "$entry" | jq -r '.addr')
-            hyprctl dispatch closewindow "address:$old_addr" >/dev/null 2>&1
+            hyprctl dispatch "hl.dsp.window.close({ window = 'address:$old_addr' })" >/dev/null 2>&1
         done
         # Remove from log
         tail -n "$MAX_TRASH" "$TRASH_LOG" > "$TRASH_LOG.tmp" && mv "$TRASH_LOG.tmp" "$TRASH_LOG"
@@ -123,8 +127,8 @@ do_pop() {
     fi
 
     # Move back to original workspace
-    hyprctl dispatch movetoworkspacesilent "$from_ws,address:$addr" >/dev/null 2>&1
-    hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1
+    hyprctl dispatch "hl.dsp.window.move({ workspace = '$from_ws', follow = false, window = 'address:$addr' })" >/dev/null 2>&1
+    hyprctl dispatch "hl.dsp.focus({ window = 'address:$addr' })" >/dev/null 2>&1
 
     notify-send -t 1500 "↩ Restored" "$title"
 }
@@ -146,7 +150,7 @@ do_reap() {
 
         if (( age > TTL_SECONDS )); then
             # Kill the expired window
-            hyprctl dispatch closewindow "address:$addr" >/dev/null 2>&1
+            hyprctl dispatch "hl.dsp.window.close({ window = 'address:$addr' })" >/dev/null 2>&1
         else
             keep+="$entry"$'\n'
         fi
