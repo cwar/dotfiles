@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""
+tmux-clean-copy: Clean terminal/TUI copy artifacts from clipboard.
+
+Strips box-drawing borders (│ from pi/TUI output) and rejoins
+soft-wrapped lines while preserving intentional structure (paragraphs,
+lists, headers, code blocks).
+
+Usage:
+  tmux-clean-copy              # clipboard: read wl-paste → clean → wl-copy
+  ... | tmux-clean-copy        # pipe: stdin → stdout
+  tmux-clean-copy --test       # run self-tests
+"""
+
+import sys, os, re, subprocess
+
+# ── Box-drawing detection ───────────────────────────────────────────────────
+
+BOX_CHARS = set("─━═┄┈╌╍│┃║╭╮╰╯┌┐└┘├┤┬┴┼╠╣╔╗╚╝╞╡╥╨╪")
+
+BORDER_PFX = re.compile(r"^[\s]*[│┃]\s?")
+BORDER_SFX = re.compile(r"\s*[│┃]\s*$")
+
+# Lines that start with structure markers should NOT be joined to previous
+STRUCTURE = re.compile(r"^(\s*[-*•+]\s|\s*\d+[.)]\s|#{1,6}\s|>\s)")
+
+# Terminal punctuation: signals the author intended to end this line
+END_PUNCT = re.compile(r"[.!?:;]\s*$")
+
+
+def is_decoration(line):
+    """True if line is a decorative border (horizontal rules, box corners).
+    Lines with only vertical bars (│) are content lines, not decoration."""
+    s = line.replace(" ", "")
+    if not s:
+        return False
+    # Must contain horizontal box-drawing chars — a lone │ is a box content line
+    HORIZ = set("─━═┄┈╌╍")
+    if not any(c in HORIZ for c in s):
+        return False
+    return sum(c in BOX_CHARS for c in s) / len(s) > 0.6
+
+
+# ── Core cleaning ───────────────────────────────────────────────────────────
+
+def clean(text):
+    lines = text.rstrip("\n").split("\n")
+    if not lines:
+        return text
+
+    # Detect TUI box: if >30% of lines have │ prefix, strip borders
+    has_box = sum(bool(BORDER_PFX.match(l)) for l in lines) > len(lines) * 0.3
+
+    # Phase 1: strip decoration and borders
+    stripped = []
+    for l in lines:
+        if is_decoration(l):
+            continue  # discard ╭───╮, ╰───╯, ────── lines
+        if has_box:
+            l = BORDER_PFX.sub("", l, count=1)
+            l = BORDER_SFX.sub("", l, count=1)
+        stripped.append(l)
+
+    # Trim leading/trailing blanks
+    while stripped and not stripped[0].strip():
+        stripped.pop(0)
+    while stripped and not stripped[-1].strip():
+        stripped.pop()
+    if not stripped:
+        return text
+
+    # Phase 2: determine wrap width from the longest content lines
+    lengths = [len(l) for l in stripped if len(l) > 20]
+    wrap_w = max(lengths) if lengths else 80
+
+    # Phase 3: rejoin soft-wrapped lines
+    result = []
+    i = 0
+    while i < len(stripped):
+        line = stripped[i]
+
+        while i + 1 < len(stripped):
+            nxt = stripped[i + 1]
+
+            # ── Preserve intentional breaks ──
+            if not nxt.strip():
+                break  # blank line = paragraph break
+
+            if STRUCTURE.match(nxt):
+                # Exception: URL split before a #fragment
+                #   (https://example.com/path/
+                #   #add-a-thing)
+                if (line.rstrip().endswith("/")
+                        and nxt.lstrip().startswith("#")
+                        and "://" in line):
+                    line = line.rstrip() + nxt.lstrip()
+                    i += 1
+                    continue
+                break  # list item, header, blockquote
+
+            # ── Should we join? ──
+            cur_len = len(line)
+            should_join = False
+
+            # Always respect terminal punctuation — the author ended here
+            if END_PUNCT.search(line.rstrip()):
+                should_join = False
+
+            # Strong signal: line filled (or nearly filled) the wrap width
+            elif cur_len >= wrap_w - 8:
+                should_join = True
+
+            # Medium signal: line doesn't end with terminal punctuation
+            # AND the next line continues mid-sentence (starts lowercase or "(")
+            else:
+                first = nxt.lstrip()[:1]
+                if first and (first.islower() or first == "("):
+                    should_join = True
+
+            if not should_join:
+                break
+
+            # ── Join ──
+            rl = line.rstrip()
+            ln = nxt.lstrip()
+            last = rl[-1:] if rl else ""
+
+            if last in "/=&?":
+                line = rl + ln          # URL continuation: no space
+            elif last == "-" and not rl.endswith(" -") and not rl.endswith("--"):
+                line = rl + ln          # compound word split: app- + level → app-level
+            else:
+                line = rl + " " + ln    # normal word boundary
+
+            i += 1
+
+        result.append(line)
+        i += 1
+
+    return "\n".join(result)
+
+
+# ── Clipboard I/O ──────────────────────────────────────────────────────────
+
+def clipboard_read():
+    """Read from Wayland or X11 clipboard."""
+    for cmd in (["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]):
+        try:
+            return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    return None
+
+
+def clipboard_write(text):
+    """Write to Wayland or X11 clipboard."""
+    for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
+        try:
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
+            p.communicate(input=text)
+            return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def tmux_message(msg):
+    subprocess.run(["tmux", "display-message", msg], stderr=subprocess.DEVNULL)
+
+
+# ── Self-tests ──────────────────────────────────────────────────────────────
+
+def run_tests():
+    passed = failed = 0
+
+    def check(name, input_text, expected):
+        nonlocal passed, failed
+        got = clean(input_text)
+        if got == expected:
+            print(f"  ✓ {name}")
+            passed += 1
+        else:
+            print(f"  ✗ {name}")
+            print(f"    expected: {expected!r}")
+            print(f"    got:      {got!r}")
+            failed += 1
+
+    # Basic border stripping + rewrap
+    check("pi box prose", """\
+ │ Hey — we need a groups claim added at the Authorization Server level for
+ │ our Druid OIDC app. Our groups are synced from Band Manager and are
+ │ APP_GROUP type in Okta, so the app-level groups claim filter doesn't pick
+ │ them up (it only searches OKTA_GROUP).
+ │\x20
+ │ Per Okta's docs
+ │ (https://developer.okta.com/docs/guides/customize-tokens-groups-claim/main/
+ │ #add-a-groups-claim-for-a-custom-authorization-server):
+ │\x20
+ │ Security → API → [auth server] → Claims → Add Claim:
+ │ - Name: groups
+ │ - Include in token type: ID Token, Always
+ │ - Value type: Groups
+ │ - Filter: Matches regex → ^(druid-|babka).*
+ │\x20
+ │ This replaces our current app-level getFilteredGroups() expression that
+ │ uses hardcoded group IDs and requires manual updates every time we add a
+ │ new group.""",
+
+        "Hey — we need a groups claim added at the Authorization Server level for "
+        "our Druid OIDC app. Our groups are synced from Band Manager and are "
+        "APP_GROUP type in Okta, so the app-level groups claim filter doesn't pick "
+        "them up (it only searches OKTA_GROUP).\n"
+        "\n"
+        "Per Okta's docs "
+        "(https://developer.okta.com/docs/guides/customize-tokens-groups-claim/main/"
+        "#add-a-groups-claim-for-a-custom-authorization-server):\n"
+        "\n"
+        "Security → API → [auth server] → Claims → Add Claim:\n"
+        "- Name: groups\n"
+        "- Include in token type: ID Token, Always\n"
+        "- Value type: Groups\n"
+        "- Filter: Matches regex → ^(druid-|babka).*\n"
+        "\n"
+        "This replaces our current app-level getFilteredGroups() expression that "
+        "uses hardcoded group IDs and requires manual updates every time we add a "
+        "new group.")
+
+    # List items preserved
+    check("list items", """\
+ │ Here are the steps:
+ │ - First do this
+ │ - Then do that
+ │ - Finally check""",
+        "Here are the steps:\n"
+        "- First do this\n"
+        "- Then do that\n"
+        "- Finally check")
+
+    # No borders, just terminal wrapping
+    check("plain terminal wrap",
+        "This is a line that was wrapped at exactly seventy-two characters by the\n"
+        "terminal emulator and should be rejoined into one.",
+        "This is a line that was wrapped at exactly seventy-two characters by the "
+        "terminal emulator and should be rejoined into one.")
+
+    # Full box with borders
+    check("full box borders", """\
+╭─ file.txt ────────────────────────────────────────────────────────────╮
+│ Some content that is long enough to wrap inside the box and will span │
+│ multiple lines when rendered.                                        │
+╰──────────────────────────────────────────────────────────────────────╯""",
+        "Some content that is long enough to wrap inside the box and will span "
+        "multiple lines when rendered.")
+
+    # Short text, no wrapping needed
+    check("short text passthrough",
+        " │ Hello world.",
+        "Hello world.")
+
+    # Paragraph breaks preserved
+    check("paragraph breaks", """\
+ │ First paragraph.
+ │\x20
+ │ Second paragraph.""",
+        "First paragraph.\n\nSecond paragraph.")
+
+    print(f"\n  {passed} passed, {failed} failed")
+    return 1 if failed else 0
+
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        sys.exit(run_tests())
+
+    if os.isatty(sys.stdin.fileno()):
+        # Clipboard mode
+        text = clipboard_read()
+        if not text or not text.strip():
+            sys.exit(0)
+
+        cleaned = clean(text)
+        clipboard_write(cleaned)
+
+        # Feedback
+        preview = cleaned.split("\n")[0][:55]
+        n = len(cleaned.split("\n"))
+        msg = f"✨ Cleaned: {preview}" if n == 1 else f"✨ Cleaned ({n}L): {preview}…"
+        tmux_message(msg)
+    else:
+        # Pipe mode: stdin → stdout
+        sys.stdout.write(clean(sys.stdin.read()))
+
+
+if __name__ == "__main__":
+    main()

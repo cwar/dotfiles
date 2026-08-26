@@ -1,0 +1,12 @@
+[General]
+count=1
+rules=ad7e06f8-d22c-40ea-8c79-5dff6d5f66df
+
+[ad7e06f8-d22c-40ea-8c79-5dff6d5f66df]
+Description=Chrome: open un-maximized (for Krohnkite tiling)
+wmclass=[Gg]oogle-chrome
+wmclassmatch=3
+maximizehoriz=false
+maximizehorizrule=2
+maximizevert=false
+maximizevertrule=2

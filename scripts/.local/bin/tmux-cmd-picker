@@ -1,0 +1,453 @@
+#!/usr/bin/env bash
+# tmux-cmd-picker: Extract bash/shell commands from tmux scrollback, pick with fzf, copy or run
+# Companion to tmux-url-picker: prefix+u = URLs, prefix+b = bash snippets
+#
+# Design: code blocks are grouped as single entries (not split line-by-line).
+# Blocks preceded by action phrases ("run this:", "install with:") get 🔥 emphasis.
+#
+# Usage: tmux-cmd-picker [--selftest|--debug]
+#
+# Invocation: bind via `display-popup -E` (not `run-shell -b`) so the popup
+# opens instantly and captures keystrokes before the script finishes loading:
+#   bind b display-popup -E -w95% -h80% "~/.local/bin/tmux-cmd-picker --popup"
+# The --popup flag tells us we're already inside a popup → use plain fzf.
+
+set -euo pipefail
+
+DEBUG=${TMUX_CMD_PICKER_DEBUG:-0}
+LOGFILE="/tmp/tmux-cmd-picker.log"
+
+log() { [[ "$DEBUG" == 1 ]] && printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >>"$LOGFILE"; }
+trap 'log "ERROR status=$? line=$LINENO cmd=$BASH_COMMAND"' ERR
+
+die() {
+  tmux display-message "❌ cmd-picker: $1" 2>/dev/null
+  log "FATAL: $1"
+  exit 1
+}
+
+# ── Clipboard helper (wl-copy → xclip → xsel → tmux buffer) ────────────────
+copy_to_clipboard() {
+  local clipfile
+  clipfile=$(mktemp)
+  cat >"$clipfile"
+
+  if command -v wl-copy &>/dev/null && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    if wl-copy <"$clipfile"; then
+      rm -f "$clipfile"
+      return 0
+    fi
+    log "WARN: wl-copy failed, falling back"
+  fi
+
+  if command -v xclip &>/dev/null; then
+    if xclip -selection clipboard <"$clipfile"; then
+      rm -f "$clipfile"
+      return 0
+    fi
+    log "WARN: xclip failed, falling back"
+  fi
+
+  if command -v xsel &>/dev/null; then
+    if xsel --clipboard --input <"$clipfile"; then
+      rm -f "$clipfile"
+      return 0
+    fi
+    log "WARN: xsel failed, falling back"
+  fi
+
+  tmux load-buffer "$clipfile" || true
+  rm -f "$clipfile"
+  log "WARN: clipboard unavailable, copied to tmux buffer"
+  return 0
+}
+
+# ── Selftest ────────────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--selftest" ]]; then
+  source "${BASH_SOURCE[0]%/*}/tmux-cmd-picker-test"
+  exit $?
+fi
+
+INSIDE_POPUP=0
+for arg in "${@}"; do
+  case "$arg" in
+    --debug)
+      DEBUG=1
+      : >"$LOGFILE"
+      log "=== session start ==="
+      ;;
+    --popup) INSIDE_POPUP=1 ;;
+  esac
+done
+
+SCROLLBACK=2000
+SOURCE_PANE="${TMUX_PANE:-}"
+
+log "Capturing scrollback ($SCROLLBACK lines) popup=$INSIDE_POPUP source=$SOURCE_PANE"
+
+# Prefer the pane tmux passed via TMUX_PANE. This works both when launched from
+# display-popup (where the current pane is the popup) and run-shell (where there
+# may be no useful current pane for capture-pane to infer).
+if [[ -n "$SOURCE_PANE" ]]; then
+  CONTENT=$(tmux capture-pane -t "$SOURCE_PANE" -p -S -${SCROLLBACK} 2>/dev/null || tmux capture-pane -p -S -${SCROLLBACK} 2>/dev/null || tmux capture-pane -p) || die "tmux capture-pane failed"
+else
+  CONTENT=$(tmux capture-pane -p -S -${SCROLLBACK} 2>/dev/null || tmux capture-pane -p) || die "tmux capture-pane failed"
+fi
+log "Captured $(echo "$CONTENT" | wc -l) lines"
+
+BLOCKDIR=$(mktemp -d)
+CTXFILE="$BLOCKDIR/scrollback.txt"
+PREVIEW="$BLOCKDIR/preview.sh"
+trap 'rm -rf "$BLOCKDIR"' EXIT
+
+echo "$CONTENT" >"$CTXFILE"
+
+# ── Preview helper ──────────────────────────────────────────────────────────
+cat >"$PREVIEW" <<'PREVIEW_SCRIPT'
+#!/usr/bin/env bash
+IDX="$1"; BLOCKDIR="$2"
+CMD_FILE="$BLOCKDIR/$IDX.cmd"
+CTX="$BLOCKDIR/scrollback.txt"
+[ -f "$CMD_FILE" ] || exit 0
+
+# ── Full block (syntax highlighted) ──
+NLINES=$(awk 'END{print NR}' "$CMD_FILE")
+if [ "$NLINES" -gt 1 ]; then
+    printf '\033[1m─── block (%d lines) ───\033[0m\n' "$NLINES"
+else
+    printf '\033[1m─── command ───\033[0m\n'
+fi
+bat -l bash --color=always --style=plain --paging=never "$CMD_FILE" 2>/dev/null || cat "$CMD_FILE"
+
+# ── Scrollback context ──
+RANGE=$(cat "$BLOCKDIR/$IDX.range" 2>/dev/null)
+[ -z "$RANGE" ] && exit 0
+BSTART=${RANGE%%:*}
+BEND=${RANGE##*:}
+TOTAL=$(wc -l < "$CTX")
+N=5
+START=$((BSTART > N ? BSTART - N : 1))
+END=$((BEND + N > TOTAL ? TOTAL : BEND + N))
+
+echo ""
+printf '\033[38;5;242m─── context (line %d) ───\033[0m\n' "$BSTART"
+awk -v s="$START" -v e="$END" -v bs="$BSTART" -v be="$BEND" '
+NR >= s && NR <= e {
+    if (NR >= bs && NR <= be)
+        printf "\033[1;32m▸ %s\033[0m\n", $0
+    else
+        printf "\033[38;5;242m  %s\033[0m\n", $0
+}' "$CTX"
+PREVIEW_SCRIPT
+chmod +x "$PREVIEW"
+
+# ── Extract blocks ──────────────────────────────────────────────────────────
+export BLOCKDIR
+echo "$CONTENT" | awk '
+BEGIN {
+    dir = ENVIRON["BLOCKDIR"]
+    n = 0; in_block = 0; trust = 0
+    content = ""; block_start = 0; block_end = 0
+    prev = ""
+}
+
+function is_action(text,    t) {
+    t = tolower(text)
+    if (t ~ /(run|install|execute|try|paste|copy|add|enable|start|create|configure|set.?up|fix|update|upgrade|use|type|enter)\s+(this|the |it |these|with|using|by |via )/) return 1
+    if (t ~ /following (command|snippet|script|code|block|step)/) return 1
+    if (t ~ /^(then|first|next|now|finally)[,: ].*(run|install|add|try|execute|enable|set.?up|create|configure|paste|use)/) return 1
+    if (length(text) < 100 && t ~ /:$/) return 1
+    return 0
+}
+
+function flush(content, priority, bstart, bend, hint,    idx, fn, first, nlines, disp, h) {
+    if (content == "") return
+    n++
+    idx = sprintf("%04d", n)
+
+    fn = dir "/" idx ".cmd"
+    printf "%s", content > fn; close(fn)
+
+    fn = dir "/" idx ".range"
+    printf "%d:%d", bstart, bend > fn; close(fn)
+
+    # Display line: show first non-comment command
+    first = content
+    sub(/\n.*/, "", first)
+    nlines = split(content, _arr, "\n")
+
+    disp = idx "\t"
+    if (priority == "high")
+        disp = disp "\033[1;33m🔥 " first
+    else
+        disp = disp "   " first
+
+    if (nlines > 1)
+        disp = disp "  \033[38;5;245m(+" (nlines - 1) " more)\033[0m"
+
+    if (priority == "high" && hint != "") {
+        h = hint
+        sub(/:$/, "", h)
+        if (length(h) > 50) h = substr(h, 1, 50) "…"
+        disp = disp " \033[38;5;245m── " h "\033[0m"
+    }
+    if (priority == "high") disp = disp "\033[0m"
+
+    fn = dir "/display.txt"
+    print disp >> fn; close(fn)
+}
+
+# ── Fence detection ──
+# Strict markdown fence: three backticks + optional language tag + EOL.
+# Rejects pseudo-fences from quoted content like ``​`2026-03-17T13:50:07... where
+# arbitrary text follows the backticks on the same line (common in Slack message
+# captures, log paste blocks, etc.). Without this, those lines flip in_block
+# spuriously and eat the real fences elsewhere in the scrollback.
+function clean_line(raw,    line) {
+    line = raw
+    sub(/\r$/, "", line)
+    # Pi/TUI captures may include a decorative left border before content.
+    sub(/^[[:space:]]*[│┃][[:space:]]?/, "", line)
+    sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+    return line
+}
+
+function is_fence(s,    line) {
+    line = clean_line(s)
+    return (line ~ /^```[[:space:]]*[a-zA-Z0-9_+#-]*[[:space:]]*$/)
+}
+
+function prompt_command(text,    cmd) {
+    cmd = text
+    if (cmd ~ /^\$[[:space:]]+/) { sub(/^\$[[:space:]]+/, "", cmd); return cmd }
+    if (cmd ~ /^>[[:space:]]+/) { sub(/^>[[:space:]]+/, "", cmd); return cmd }
+    if (cmd ~ /^❯[[:space:]]+/) { sub(/^❯[[:space:]]+/, "", cmd); return cmd }
+    return ""
+}
+
+# ── Track prev line for action-phrase detection + standalone commands ──
+!in_block && !is_fence($0) {
+    line = clean_line($0)
+    cmd = prompt_command(line)
+    if (cmd != "") {
+        if (cmd !~ /^#/) flush(cmd, is_action(prev) ? "high" : "normal", NR, NR, is_action(prev) ? prev : "")
+        if (line != "" && length(line) > 2) prev = line
+        next
+    }
+    if (is_action(prev) && has_runnable(line)) {
+        flush(line, "high", NR, NR, prev)
+        prev = line
+        next
+    }
+    if (line != "" && length(line) > 2) prev = line
+}
+
+# ── Does this block have at least one clearly interactive command? ──
+# Used as gatekeeper for untagged blocks: pass sudo/pacman/docker/etc,
+# block script internals like BLOCKDIR=$(mktemp) or sort -u ...
+function has_runnable(block,    lines, i, nn, l) {
+    nn = split(block, lines, "\n")
+    for (i = 1; i <= nn; i++) {
+        l = lines[i]
+        if (l ~ /^(sudo|doas) /) return 1
+        if (l ~ /^(pacman|apt-get|apt|yay|paru|dnf|zypper|brew|nala|emerge|apk) /) return 1
+        if (l ~ /^(pip[3]? install|npm install|cargo install|go install|uv pip)/) return 1
+        if (l ~ /^(docker|podman|kubectl|helm|terraform|ansible|vagrant) /) return 1
+        if (l ~ /^git (clone|pull|push|checkout|switch|merge|add|commit|stash|remote|branch|tag|reset|rebase|revert) /) return 1
+        if (l ~ /^(curl |wget |ssh |scp |rsync )/) return 1
+        if (l ~ /^(systemctl|journalctl) /) return 1
+        if (l ~ /^(make($| )|cmake |cargo (build|run|test|new)|npm (run|start|test)|npx |yarn |pnpm |bun )/) return 1
+        if (l ~ /^(flatpak|snap|mise|rustup|asdf|nix) /) return 1
+        if (l ~ /^(chmod \+x|xdg-open|hyprctl|nmcli|ufw|notify-send) /) return 1
+        if (l ~ /^(python[3]? |node |deno |ruby |perl )/) return 1
+        if (l ~ /^(gh |aws |gcloud |az |vercel )/) return 1
+        if (l ~ /^(openssl|gpg|ssh-keygen) /) return 1
+        if (l ~ /^(tar |unzip |zip )/) return 1
+        if (l ~ /^(source \.|source ~|\.\/)/) return 1
+    }
+    return 0
+}
+
+# ── Block boundaries ──
+is_fence($0) {
+    if (in_block) {
+        # Flush: tagged shell blocks always, untagged only if they have runnable commands
+        if (trust == 2 || (trust == 1 && has_runnable(content)))
+            flush(content, priority, block_start, block_end, hint)
+        in_block = 0; content = ""; trust = 0
+    } else {
+        in_block = 1
+        content = ""; block_start = 0; block_end = 0
+
+        lang = clean_line($0)
+        sub(/^```[[:space:]]*/, "", lang)
+        sub(/[[:space:]]+$/, "", lang)
+        lang = tolower(lang)
+
+        if (lang ~ /^(bash|sh|shell|zsh|console|ksh|fish)$/)
+            trust = 2
+        else if (lang ~ /^(python|py|javascript|js|typescript|ts|java|kotlin|scala|rust|go|ruby|perl|php|sql|yaml|yml|json|xml|html|css|scss|toml|ini|lua|r|swift|dart|c|cpp|csharp|haskell|awk|sed|makefile|cmake|dockerfile|conf|diff|log|text|txt|csv)$/)
+            trust = 0
+        else
+            trust = 1  # untagged: collect content, gatecheck on close
+
+        if (is_action(prev)) { priority = "high"; hint = prev }
+        else { priority = "normal"; hint = "" }
+    }
+    next
+}
+
+# ── Inside blocks: capture non-comment executable lines ──
+in_block && trust > 0 {
+    line = clean_line($0)
+    if (line == "") next
+    if (length(line) < 3) next
+    if (line ~ /^#([^!]|$)/) next
+    if (line ~ /^[─━┄┈═╌╍┌┐└┘╭╮╰╯├┤┬┴┼│┃]+$/) next
+    if (line ~ /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/) next
+    if (line ~ /^(Took|Elapsed) [0-9]/) next
+
+    if (content != "") content = content "\n"
+    content = content line
+    if (block_start == 0) block_start = NR
+    block_end = NR
+    next
+}
+'
+
+# ── Build display list (most recent first, deduped by content) ──
+if [ ! -f "$BLOCKDIR/display.txt" ]; then
+  if [[ $INSIDE_POPUP -eq 1 ]]; then
+    echo "No commands found in scrollback" >&2
+    sleep 0.8
+  else
+    tmux display-message "No commands found in scrollback"
+  fi
+  exit 0
+fi
+
+log "Extracted $(ls "$BLOCKDIR"/*.cmd 2>/dev/null | wc -l) blocks"
+
+# Dedup: md5 of .cmd content, keep most-recent (tac → first seen wins)
+tac "$BLOCKDIR/display.txt" | while IFS=$'\t' read -r idx rest; do
+  [ -f "$BLOCKDIR/$idx.cmd" ] || continue
+  hash=$(md5sum <"$BLOCKDIR/$idx.cmd" | cut -c1-8)
+  hashfile="$BLOCKDIR/seen_$hash"
+  if [ ! -f "$hashfile" ]; then
+    touch "$hashfile"
+    printf '%s\t%s\n' "$idx" "$rest"
+  fi
+done >"$BLOCKDIR/list.txt"
+
+CMD_COUNT=$(wc -l <"$BLOCKDIR/list.txt")
+log "After dedup: $CMD_COUNT blocks"
+if [ "$CMD_COUNT" -eq 0 ]; then
+  if [[ $INSIDE_POPUP -eq 1 ]]; then
+    echo "No commands found in scrollback" >&2
+    sleep 0.8
+  else
+    tmux display-message "No commands found in scrollback"
+  fi
+  exit 0
+fi
+
+# ── fzf ─────────────────────────────────────────────────────────────────────
+log "Launching fzf with $CMD_COUNT items (popup=$INSIDE_POPUP)"
+FZF_ERR="$BLOCKDIR/fzf.err"
+
+FZF_ARGS=(
+  --ansi
+  --multi
+  --reverse
+  --delimiter=$'\t'
+  --with-nth=2..
+  --header="╸ $CMD_COUNT snippets ╺ 🔥=run this │ enter=copy │ ctrl-e=new window │ ctrl-v=editor │ ctrl-a=copy all"
+  --prompt="⚡ "
+  --preview="bash $PREVIEW {1} $BLOCKDIR"
+  --preview-window='right,55%,wrap,border-left'
+  --bind="ctrl-a:execute-silent(for f in $BLOCKDIR/*.cmd; do cat \"\$f\"; echo; done | wl-copy)+abort"
+  --expect="enter,ctrl-e,ctrl-v"
+)
+
+if [[ $INSIDE_POPUP -eq 1 ]]; then
+  # Already inside a display-popup — use plain fzf (no nested popup)
+  SELECTED=$(fzf "${FZF_ARGS[@]}" <"$BLOCKDIR/list.txt" 2>"$FZF_ERR") || {
+    err=$(cat "$FZF_ERR" 2>/dev/null)
+    log "fzf exited: $err"
+    [[ -n "$err" ]] && printf 'fzf failed: %s\n' "$err" >&2 && sleep 2
+    exit 0
+  }
+else
+  # Fallback: launched via run-shell or direct invocation — use fzf-tmux popup
+  SELECTED=$(fzf-tmux -p 95%,80% "${FZF_ARGS[@]}" <"$BLOCKDIR/list.txt" 2>"$FZF_ERR") || {
+    err=$(cat "$FZF_ERR" 2>/dev/null)
+    log "fzf exited: $err"
+    [[ -n "$err" ]] && tmux display-message "❌ cmd-picker fzf failed: $err"
+    exit 0
+  }
+fi
+
+KEY=$(echo "$SELECTED" | head -1)
+ITEMS=$(echo "$SELECTED" | tail -n +2)
+
+[ -z "$ITEMS" ] && {
+  log "No selected items"
+  exit 0
+}
+log "fzf key=${KEY:-enter} items=$(printf '%s\n' "$ITEMS" | wc -l)"
+
+# Collect content from selected blocks
+COMBINED=""
+while IFS=$'\t' read -r idx _rest; do
+  [ -f "$BLOCKDIR/$idx.cmd" ] || continue
+  block=$(<"$BLOCKDIR/$idx.cmd")
+  if [ -n "$COMBINED" ]; then COMBINED="$COMBINED"$'\n'; fi
+  COMBINED="$COMBINED$block"
+done <<<"$ITEMS"
+
+[ -z "$COMBINED" ] && {
+  log "Selected items resolved to empty content"
+  exit 0
+}
+
+FIRST_IDX=$(echo "$ITEMS" | head -1 | cut -f1)
+
+case "$KEY" in
+  ctrl-e)
+    log "Action: ctrl-e (new window)"
+    NLINES=$(printf '%s' "$COMBINED" | awk 'END{print NR}')
+    if [ "$NLINES" -eq 1 ]; then
+      # Single command: type into new window (user presses Enter)
+      tmux new-window -c "#{pane_current_path}"
+      tmux send-keys "$COMBINED"
+      tmux display-message "⚡ Command ready — press Enter to run"
+    else
+      # Multi-line: copy to clipboard, open new window
+      printf '%s' "$COMBINED" | copy_to_clipboard
+      tmux new-window -c "#{pane_current_path}"
+      tmux send-keys 'wl-paste'
+      tmux display-message "⚡ Block copied — Enter to paste, review, then run"
+    fi
+    ;;
+  ctrl-v)
+    log "Action: ctrl-v (editor)"
+    # Open in editor, copy result to clipboard on save
+    EDITFILE="/tmp/tmux-cmd-$$.sh"
+    cat "$BLOCKDIR/$FIRST_IDX.cmd" >"$EDITFILE"
+    EDIT_CMD="${EDITOR:-vim}"
+    tmux new-window -n "edit-cmd" "bash -c '${EDIT_CMD} ${EDITFILE}; wl-copy < ${EDITFILE}; rm -f ${EDITFILE}; tmux display-message \"📋 Copied to clipboard\"'"
+    ;;
+  *)
+    log "Action: copy to clipboard"
+    printf '%s' "$COMBINED" | copy_to_clipboard
+    FIRST_LINE=$(echo "$COMBINED" | head -1)
+    NLINES=$(printf '%s' "$COMBINED" | awk 'END{print NR}')
+    if [ "$NLINES" -eq 1 ]; then
+      tmux display-message "📋 Copied: ${FIRST_LINE:0:60}"
+    else
+      tmux display-message "📋 Copied $NLINES lines"
+    fi
+    ;;
+esac
+
+log "Done"

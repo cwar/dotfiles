@@ -218,20 +218,47 @@ function countLines(text: string | undefined): number {
 	return text.split("\n").length;
 }
 
+/** Extract the list of {oldText, newText} pairs from an edit tool input. */
+function extractEdits(
+	input: Record<string, unknown>,
+): { oldText: string; newText: string }[] {
+	// pi's edit tool: { path, edits: [{oldText, newText}, ...] }
+	if (Array.isArray(input.edits)) {
+		return (input.edits as { oldText?: string; newText?: string }[]).map(
+			(e) => ({
+				oldText: e.oldText ?? "",
+				newText: e.newText ?? "",
+			}),
+		);
+	}
+	// Fallback: top-level oldText/newText (shouldn't happen, but safe)
+	return [
+		{
+			oldText: (input.oldText as string) ?? "",
+			newText: (input.newText as string) ?? "",
+		},
+	];
+}
+
 function summarizeEdit(
 	toolName: string,
 	input: Record<string, unknown>,
 ): { file: string; lines: number; summary: string } {
 	if (toolName === "edit") {
 		const p = (input.path as string) ?? "unknown";
-		const oldText = (input.oldText as string) ?? "";
-		const newText = (input.newText as string) ?? "";
-		const removedLines = countLines(oldText);
-		const addedLines = countLines(newText);
+		const edits = extractEdits(input);
+		let totalRemoved = 0;
+		let totalAdded = 0;
+		for (const e of edits) {
+			totalRemoved += countLines(e.oldText);
+			totalAdded += countLines(e.newText);
+		}
+		const editCount = edits.length;
+		const editLabel = editCount > 1 ? ` across ${editCount} edits` : "";
 		return {
 			file: p,
-			lines: Math.max(removedLines, addedLines),
-			summary: `Replace ${removedLines} line${removedLines !== 1 ? "s" : ""} → ${addedLines} line${addedLines !== 1 ? "s" : ""}`,
+			lines: Math.max(totalRemoved, totalAdded),
+			summary: `Replace ${totalRemoved} line${totalRemoved !== 1 ? "s" : ""} → ${totalAdded} line${totalAdded !== 1 ? "s" : ""}${editLabel}`,
 		};
 	}
 
@@ -245,61 +272,408 @@ function summarizeEdit(
 	};
 }
 
-function buildDiffPreview(
-	toolName: string,
-	input: Record<string, unknown>,
+/** Max lines of diff output per edit hunk before truncating. */
+const DIFF_LINES_PER_HUNK = 12;
+/** Context lines to show around each edit from the original file. */
+const CONTEXT_LINES = 3;
+/** Minimum unchanged context required before we try inline highlighting. */
+const MIN_INLINE_CONTEXT = 4;
+/** Avoid noisy inline diffs when lines are wildly different in length. */
+const MAX_INLINE_LENGTH_DELTA = 80;
+/** Terminal tabs are rendered wider than one character; normalize before fitting. */
+const TAB_DISPLAY = "    ";
+
+function fitPreviewLine(line: string, width: number): string {
+	return truncateToWidth(line.replace(/\t/g, TAB_DISPLAY), Math.max(0, width));
+}
+
+/**
+ * Try to locate `needle` in `haystack` (the file lines) and return its
+ * 0-based start index. Returns -1 if not found.
+ */
+function findTextInFile(fileLines: string[], needle: string): number {
+	if (!needle) return -1;
+	const needleLines = needle.split("\n");
+	if (needleLines.length === 0) return -1;
+
+	outer: for (let i = 0; i <= fileLines.length - needleLines.length; i++) {
+		for (let j = 0; j < needleLines.length; j++) {
+			if (fileLines[i + j] !== needleLines[j]) continue outer;
+		}
+		return i;
+	}
+	return -1;
+}
+
+/**
+ * Read the target file's lines for providing diff context.
+ * Returns empty array if unreadable (new file, etc.).
+ */
+function readFileLines(filePath: string, cwd?: string): string[] {
+	try {
+		const resolved = path.isAbsolute(filePath)
+			? filePath
+			: path.resolve(cwd ?? process.cwd(), filePath);
+		return fs.readFileSync(resolved, "utf-8").split("\n");
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Build a contextual diff preview for a single edit hunk.
+ * Shows context lines from the original file around the change,
+ * with removed lines (red) and added lines (green).
+ */
+function sharedPrefixLength(a: string, b: string): number {
+	const limit = Math.min(a.length, b.length);
+	let i = 0;
+	while (i < limit && a[i] === b[i]) i++;
+	return i;
+}
+
+function sharedSuffixLength(a: string, b: string, prefixLen: number): number {
+	const max = Math.min(a.length, b.length) - prefixLen;
+	let i = 0;
+	while (
+		i < max &&
+		a[a.length - 1 - i] === b[b.length - 1 - i]
+	) {
+		i++;
+	}
+	return i;
+}
+
+function shouldInlineDiff(oldLine: string, newLine: string): boolean {
+	if (!oldLine || !newLine || oldLine === newLine) return false;
+	if (Math.abs(oldLine.length - newLine.length) > MAX_INLINE_LENGTH_DELTA) {
+		return false;
+	}
+
+	const prefixLen = sharedPrefixLength(oldLine, newLine);
+	const suffixLen = sharedSuffixLength(oldLine, newLine, prefixLen);
+	const shared = prefixLen + suffixLen;
+	return shared >= MIN_INLINE_CONTEXT;
+}
+
+function renderInlineChangedLine(
+	lineNumber: string,
+	prefix: "-" | "+",
+	line: string,
+	otherLine: string,
+	width: number,
+	theme: any,
+): string {
+	const gutterColor = prefix === "-" ? "toolDiffRemoved" : "toolDiffAdded";
+	const changedColor = prefix === "-" ? "error" : "success";
+	const prefixLen = sharedPrefixLength(line, otherLine);
+	const suffixLen = sharedSuffixLength(line, otherLine, prefixLen);
+	const middleEnd = line.length - suffixLen;
+
+	const unchangedStart = line.slice(0, prefixLen);
+	const changed = line.slice(prefixLen, middleEnd);
+	const unchangedEnd = line.slice(middleEnd);
+	const markedChanged = `[[${changed || "∅"}]]`;
+	const highlightedChanged = theme.underline(
+		theme.bold(theme.fg(changedColor, markedChanged)),
+	);
+
+	return truncateToWidth(
+		theme.fg(gutterColor, `  ${lineNumber} │${prefix}`) +
+			theme.fg(gutterColor, ` ${unchangedStart}`) +
+			highlightedChanged +
+			theme.fg(gutterColor, unchangedEnd),
+		width,
+	);
+}
+
+function buildHunkPreview(
+	fileLines: string[],
+	oldText: string,
+	newText: string,
 	width: number,
 	theme: any,
 ): string[] {
 	const lines: string[] = [];
+	const oldLines = oldText.split("\n");
+	const newLines = newText.split("\n");
 
-	if (toolName === "edit") {
-		const oldText = ((input.oldText as string) ?? "").split("\n");
-		const newText = ((input.newText as string) ?? "").split("\n");
+	const matchIdx = findTextInFile(fileLines, oldText);
 
-		const oldSlice = oldText.slice(0, 15);
-		for (const line of oldSlice) {
+	if (matchIdx >= 0) {
+		// We know where this edit lands in the file — show a contextual diff
+		const ctxStart = Math.max(0, matchIdx - CONTEXT_LINES);
+		const ctxEnd = Math.min(
+			fileLines.length,
+			matchIdx + oldLines.length + CONTEXT_LINES,
+		);
+
+		// Line number gutter width
+		const gutterW = String(ctxEnd + 1).length;
+
+		// Header: file position indicator
+		lines.push(
+			theme.fg(
+				"dim",
+				`  @@ line ${matchIdx + 1}${oldLines.length > 1 ? `-${matchIdx + oldLines.length}` : ""} @@`,
+			),
+		);
+
+		let emitted = 0;
+		const limit = DIFF_LINES_PER_HUNK + CONTEXT_LINES * 2;
+
+		// Pre-context
+		for (let i = ctxStart; i < matchIdx && emitted < limit; i++) {
+			const ln = String(i + 1).padStart(gutterW);
 			lines.push(
-				truncateToWidth(theme.fg("toolDiffRemoved", `- ${line}`), width),
+				truncateToWidth(
+					theme.fg("dim", `  ${ln} │ `) +
+						theme.fg("text", fileLines[i]),
+					width,
+				),
+			);
+			emitted++;
+		}
+
+		// Removed/added lines, with inline highlighting for similar pairs
+		const oldSlice = oldLines.slice(0, DIFF_LINES_PER_HUNK);
+		const newSlice = newLines.slice(0, DIFF_LINES_PER_HUNK);
+		const pairCount = Math.min(oldSlice.length, newSlice.length);
+
+		for (let i = 0; i < pairCount && emitted < limit; i++) {
+			const ln = String(matchIdx + i + 1).padStart(gutterW);
+			const pad = " ".repeat(gutterW);
+			if (shouldInlineDiff(oldSlice[i], newSlice[i])) {
+				lines.push(
+					renderInlineChangedLine(
+						ln,
+						"-",
+						oldSlice[i],
+						newSlice[i],
+						width,
+						theme,
+					),
+				);
+				emitted++;
+				if (emitted >= limit) break;
+				lines.push(
+					renderInlineChangedLine(
+						pad,
+						"+",
+						newSlice[i],
+						oldSlice[i],
+						width,
+						theme,
+					),
+				);
+				emitted++;
+			} else {
+				lines.push(
+					truncateToWidth(
+						theme.fg("toolDiffRemoved", `  ${ln} │-`) +
+							theme.fg("toolDiffRemoved", ` ${oldSlice[i]}`),
+						width,
+					),
+				);
+				emitted++;
+				if (emitted >= limit) break;
+				lines.push(
+					truncateToWidth(
+						theme.fg("toolDiffAdded", `  ${pad} │+`) +
+							theme.fg("toolDiffAdded", ` ${newSlice[i]}`),
+						width,
+					),
+				);
+				emitted++;
+			}
+		}
+
+		for (let i = pairCount; i < oldSlice.length && emitted < limit; i++) {
+			const ln = String(matchIdx + i + 1).padStart(gutterW);
+			lines.push(
+				truncateToWidth(
+					theme.fg("toolDiffRemoved", `  ${ln} │-`) +
+						theme.fg("toolDiffRemoved", ` ${oldSlice[i]}`),
+					width,
+				),
+			);
+			emitted++;
+		}
+		if (oldLines.length > DIFF_LINES_PER_HUNK) {
+			lines.push(
+				theme.fg(
+					"dim",
+					`  ${" ".repeat(gutterW)} │  ... ${oldLines.length - DIFF_LINES_PER_HUNK} more removed`,
+				),
 			);
 		}
-		if (oldText.length > 15) {
+
+		for (let i = pairCount; i < newSlice.length && emitted < limit; i++) {
+			const pad = " ".repeat(gutterW);
 			lines.push(
-				theme.fg("dim", `  ... ${oldText.length - 15} more removed lines`),
+				truncateToWidth(
+					theme.fg("toolDiffAdded", `  ${pad} │+`) +
+						theme.fg("toolDiffAdded", ` ${newSlice[i]}`),
+					width,
+				),
+			);
+			emitted++;
+		}
+		if (newLines.length > DIFF_LINES_PER_HUNK) {
+			lines.push(
+				theme.fg(
+					"dim",
+					`  ${" ".repeat(gutterW)} │  ... ${newLines.length - DIFF_LINES_PER_HUNK} more added`,
+				),
 			);
 		}
 
-		if (oldSlice.length > 0 && newText.length > 0) {
-			lines.push(theme.fg("dim", "  ───"));
-		}
-
-		const newSlice = newText.slice(0, 15);
-		for (const line of newSlice) {
+		// Post-context
+		const postStart = matchIdx + oldLines.length;
+		for (let i = postStart; i < ctxEnd && emitted < limit; i++) {
+			const ln = String(i + 1).padStart(gutterW);
 			lines.push(
-				truncateToWidth(theme.fg("toolDiffAdded", `+ ${line}`), width),
+				truncateToWidth(
+					theme.fg("dim", `  ${ln} │ `) +
+						theme.fg("text", fileLines[i]),
+					width,
+				),
 			);
-		}
-		if (newText.length > 15) {
-			lines.push(
-				theme.fg("dim", `  ... ${newText.length - 15} more added lines`),
-			);
+			emitted++;
 		}
 	} else {
-		const content = ((input.content as string) ?? "").split("\n");
-		const slice = content.slice(0, 15);
-		for (const line of slice) {
+		// Can't locate in file — still try inline highlighting for similar pairs
+		const oldSlice = oldLines.slice(0, DIFF_LINES_PER_HUNK);
+		const newSlice = newLines.slice(0, DIFF_LINES_PER_HUNK);
+		const pairCount = Math.min(oldSlice.length, newSlice.length);
+
+		for (let i = 0; i < pairCount; i++) {
+			if (shouldInlineDiff(oldSlice[i], newSlice[i])) {
+				lines.push(
+					renderInlineChangedLine(" ", "-", oldSlice[i], newSlice[i], width, theme),
+				);
+				lines.push(
+					renderInlineChangedLine(" ", "+", newSlice[i], oldSlice[i], width, theme),
+				);
+			} else {
+				lines.push(
+					truncateToWidth(theme.fg("toolDiffRemoved", `  - ${oldSlice[i]}`), width),
+				);
+				lines.push(
+					truncateToWidth(theme.fg("toolDiffAdded", `  + ${newSlice[i]}`), width),
+				);
+			}
+		}
+
+		for (let i = pairCount; i < oldSlice.length; i++) {
 			lines.push(
-				truncateToWidth(theme.fg("toolDiffAdded", `+ ${line}`), width),
+				truncateToWidth(theme.fg("toolDiffRemoved", `  - ${oldSlice[i]}`), width),
 			);
 		}
-		if (content.length > 15) {
+		if (oldLines.length > DIFF_LINES_PER_HUNK) {
 			lines.push(
-				theme.fg("dim", `  ... ${content.length - 15} more lines`),
+				theme.fg(
+					"dim",
+					`    ... ${oldLines.length - DIFF_LINES_PER_HUNK} more removed`,
+				),
+			);
+		}
+
+		if (oldSlice.length > 0 && newLines.length > 0) {
+			lines.push(theme.fg("dim", "    ───"));
+		}
+
+		for (let i = pairCount; i < newSlice.length; i++) {
+			lines.push(
+				truncateToWidth(theme.fg("toolDiffAdded", `  + ${newSlice[i]}`), width),
+			);
+		}
+		if (newLines.length > DIFF_LINES_PER_HUNK) {
+			lines.push(
+				theme.fg(
+					"dim",
+					`    ... ${newLines.length - DIFF_LINES_PER_HUNK} more added`,
+				),
 			);
 		}
 	}
 
 	return lines;
+}
+
+export function buildDiffPreview(
+	toolName: string,
+	input: Record<string, unknown>,
+	width: number,
+	theme: any,
+	cwd?: string,
+	/** Pre-read file lines to avoid sync I/O on every render. */
+	cachedFileLines?: string[],
+): string[] {
+	const lines: string[] = [];
+
+	if (toolName === "edit") {
+		const filePath = (input.path as string) ?? "";
+		const fileLines = cachedFileLines ?? readFileLines(filePath, cwd);
+		const edits = extractEdits(input);
+
+		for (let i = 0; i < edits.length; i++) {
+			const e = edits[i];
+
+			// Multi-edit separator
+			if (edits.length > 1) {
+				if (i > 0) lines.push("");
+				lines.push(
+					theme.fg("dim", `  Edit ${i + 1}/${edits.length}:`),
+				);
+			}
+
+			const hunk = buildHunkPreview(
+				fileLines,
+				e.oldText,
+				e.newText,
+				width,
+				theme,
+			);
+			lines.push(...hunk);
+		}
+	} else {
+		// Write tool — show content being written
+		const filePath = (input.path as string) ?? "";
+		let fileExists = false;
+		try {
+			const resolved = path.isAbsolute(filePath)
+				? filePath
+				: path.resolve(cwd ?? process.cwd(), filePath);
+			fileExists = fs.existsSync(resolved);
+		} catch {}
+
+		if (fileExists) {
+			lines.push(
+				theme.fg("warning", "  ⚠ File exists — will be overwritten"),
+			);
+		} else {
+			lines.push(theme.fg("dim", "  New file"));
+		}
+
+		const content = ((input.content as string) ?? "").split("\n");
+		const slice = content.slice(0, DIFF_LINES_PER_HUNK);
+		for (const line of slice) {
+			lines.push(
+				truncateToWidth(theme.fg("toolDiffAdded", `  + ${line}`), width),
+			);
+		}
+		if (content.length > DIFF_LINES_PER_HUNK) {
+			lines.push(
+				theme.fg(
+					"dim",
+					`    ... ${content.length - DIFF_LINES_PER_HUNK} more lines`,
+				),
+			);
+		}
+	}
+
+	return lines.map((line) => fitPreviewLine(line, width));
 }
 
 function showApprovalDialog(
@@ -308,8 +682,10 @@ function showApprovalDialog(
 	input: Record<string, unknown>,
 	isLarge: boolean,
 	matchValue: string,
+	cwd: string,
 ): Promise<ApprovalChoice | null> {
 	const info = summarizeEdit(toolName, input);
+	const previewCwd = cwd;
 
 	const menuItems: MenuItem[] = [
 		{
@@ -353,7 +729,18 @@ function showApprovalDialog(
 		});
 	}
 
-	return ctx.ui.custom<ApprovalChoice | null>((tui, theme, _kb, done) => {
+	// Read file lines ONCE up-front. The file isn't going to change while the
+	// dialog is open (the agent is paused), so reading on every render was
+	// just paying sync I/O for the same answer. Pre-reading also avoids
+	// stalls when the dialog gets re-rendered repeatedly due to upstream
+	// requestRender() calls (e.g., async git status, image conversion).
+	let cachedFileLines: string[] | undefined;
+	if (toolName === "edit") {
+		cachedFileLines = readFileLines((input.path as string) ?? "", cwd);
+	}
+
+	return ctx.ui.custom<ApprovalChoice | null>(
+		(tui, theme, _kb, done) => {
 		let selectedIdx = 0;
 		let amendMode = false;
 		let amendText = "";
@@ -417,6 +804,8 @@ function showApprovalDialog(
 					input,
 					innerWidth,
 					theme,
+					previewCwd,
+					cachedFileLines,
 				);
 				for (const line of preview) {
 					out.push(" " + line);
@@ -469,7 +858,7 @@ function showApprovalDialog(
 			}
 
 			out.push(theme.fg("borderAccent", "─".repeat(width)));
-			return out;
+			return out.map((line) => fitPreviewLine(line, width));
 		}
 
 		function invalidate() {
@@ -607,7 +996,23 @@ function showApprovalDialog(
 				}
 			},
 		};
-	});
+	},
+		// Render as an overlay (composited on top of base content) instead of
+		// replacing the editor area. This keeps the dialog visually stable
+		// when upstream requestRender() calls (e.g., from async git status,
+		// image conversion in old tool-execution components) cause pi-tui to
+		// fall back to a fullRender(true) — which clears scrollback + screen
+		// and would otherwise look like the dialog "flashing up and down".
+		// See pi-tui/dist/tui.js doRender() lines ~752-822 for the redraw paths.
+		{
+			overlay: true,
+			overlayOptions: {
+				width: "100%",
+				anchor: "bottom-center",
+				maxHeight: "95%",
+			},
+		},
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -900,6 +1305,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			input,
 			isLarge,
 			matchValue,
+			ctx.cwd,
 		);
 
 		if (!choice || choice.action === "reject") {

@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── Gateway Configuration ──────────────────────────────────────────
+# Spotify's GP gateways each require their OWN SAML auth, separate from the
+# portal. The portal-then-gateway flow fails on Linux (the gateway rejects the
+# portal cookie with a 512), so we authenticate and connect DIRECTLY to a
+# gateway with `gpauth --gateway` + `gpclient connect --as-gateway`.
+# Gateway FQDNs come from the portal config (getconfig) — add more as needed.
+# (Portal is spotify.gpcloudservice.com; we no longer connect through it.)
+declare -A GATEWAY_FQDNS=(
+  ["US East"]="us-east-g-spotifyu.gp5syccocjy.gw.gpcloudservice.com"
+  ["US West"]="us-west-g-spotifyu.gp5syccocjy.gw.gpcloudservice.com"
+  ["US Northwest"]="us-northwest-g-spotifyu.gp5syccocjy.gw.gpcloudservice.com"
+  ["US Southeast"]="us-southeast-g-spotifyu.gp5syccocjy.gw.gpcloudservice.com"
+  ["Sweden"]="sweden-spotifyu.gp5syccocjy.gw.gpcloudservice.com"
+  ["Ireland"]="ie-spotifyu.gp5syccocjy.gw.gpcloudservice.com"
+  ["Netherlands Central"]="netherlands-central-spotifyu.gp5syccocjy.gw.gpcloudservice.com"
+  ["Germany Central"]="germany-central-spotifyu.gp5syccocjy.gw.gpcloudservice.com"
+)
+GATEWAYS=("US East" "US West" "US Northwest" "US Southeast" "Sweden" "Ireland" "Netherlands Central" "Germany Central")
+DEFAULT_GATEWAY="US East"
+GP_LOG="/tmp/gpclient.log"
+
+# Browser for SAML/Okta auth — uses your real browser (with extensions like Bitwarden)
+# instead of the built-in webview which has no extensions.
+# Options: "default" (system default), "chrome", "firefox", "chromium",
+#           or a full path like "/usr/bin/google-chrome-stable"
+GP_AUTH_BROWSER="${GP_AUTH_BROWSER:-default}"
+GP_WAIT_TIMEOUT="${GP_WAIT_TIMEOUT:-90}"
+
+# ── Helpers ────────────────────────────────────────────────────────
+has_gum() { command -v gum &>/dev/null; }
+
+styled() {
+  local color="$1"
+  shift
+  if has_gum; then
+    gum style --foreground "$color" "$*"
+  else
+    local code
+    case "$color" in
+      1) code=31 ;; 2) code=32 ;; 3) code=33 ;; 4) code=34 ;; *) code=0 ;;
+    esac
+    printf '\033[%sm%s\033[0m\n' "$code" "$*"
+  fi
+}
+
+is_connected() {
+  ip link show gpd0 &>/dev/null || ip link show tun0 &>/dev/null
+}
+
+gpclient_preflight() {
+  local preflight_log
+  preflight_log=$(mktemp)
+
+  if ! command -v gpclient >/dev/null 2>&1; then
+    styled 1 "gpclient is not installed or is not on PATH"
+    rm -f "$preflight_log"
+    return 1
+  fi
+
+  if ! gpclient --version >/dev/null 2>"$preflight_log"; then
+    styled 1 "gpclient cannot start:"
+    cat "$preflight_log"
+    styled 3 "Try reinstalling or rebuilding the globalprotect-openconnect package."
+    rm -f "$preflight_log"
+    return 1
+  fi
+
+  rm -f "$preflight_log"
+}
+
+gp_cleanup_stale_attempts() {
+  if pgrep -f "gpclient connect" >/dev/null 2>&1 || pgrep -u "$USER" -f "gpauth " >/dev/null 2>&1; then
+    styled 3 "Cleaning up stale GlobalProtect auth attempts..."
+    sudo pkill -f "gpclient connect" 2>/dev/null || true
+    pkill -u "$USER" -f "gpauth " 2>/dev/null || true
+  fi
+}
+
+gp_launch() {
+  local gateway="$1"
+  local fqdn="${GATEWAY_FQDNS[$gateway]:-}"
+  if [[ -z "$fqdn" ]]; then
+    styled 1 "Unknown gateway: $gateway (add it to GATEWAY_FQDNS)"
+    return 1
+  fi
+
+  gpclient_preflight || return 1
+
+  # Pre-cache sudo credentials (prompts here if needed)
+  sudo -v || return 1
+  gp_cleanup_stale_attempts
+
+  : >"$GP_LOG"
+  rm -f /tmp/gpcallback.log
+  printf '[%s] Connecting to %s (%s)\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$gateway" "$fqdn" >>"$GP_LOG"
+
+  # ── Auth as the normal user, connect as root ──────────────────────
+  # Two reasons this is split rather than a single `sudo gpclient connect`:
+  #   1. On managed Ubuntu/Wayland the SAML browser cannot be opened by root
+  #      (sudo drops the display env; root has no default browser -> it opened
+  #      a text editor). gpauth run as YOU opens YOUR browser + Okta session.
+  #   2. Spotify's gateways require their OWN SAML auth, and the portal->gateway
+  #      flow makes gpclient replay the portal cookie at the gateway (-> 512).
+  #      So we authenticate the GATEWAY directly (`gpauth --gateway`) and connect
+  #      straight to it (`--as-gateway`), skipping the portal entirely.
+  styled 4 "Authenticating in your browser..."
+  local auth_data
+  if ! auth_data=$(gpauth "$fqdn" --gateway --browser "$GP_AUTH_BROWSER" 2>>"$GP_LOG"); then
+    styled 1 "Authentication failed — see $GP_LOG"
+    return 1
+  fi
+  if [[ -z "$auth_data" ]]; then
+    styled 1 "gpauth returned no authentication data — see $GP_LOG"
+    return 1
+  fi
+
+  # Bring up the tunnel as root, detached (survives terminal close),
+  # feeding the gateway auth cookie on stdin.
+  # shellcheck disable=SC2024 # Log redirection is intentionally done by this user shell.
+  sudo setsid gpclient connect "$fqdn" --as-gateway \
+    --cookie-on-stdin -v >>"$GP_LOG" 2>&1 <<<"$auth_data" &
+  disown 2>/dev/null || true
+}
+
+gp_process_running() {
+  pgrep -f "gpclient connect" >/dev/null 2>&1 || pgrep -u "$USER" -f "gpauth " >/dev/null 2>&1
+}
+
+gp_show_log_tail() {
+  if [[ -f "$GP_LOG" ]]; then
+    echo
+    styled 3 "Recent gpclient log ($GP_LOG):"
+    tail -30 "$GP_LOG"
+  fi
+}
+
+gp_wait() {
+  local timeout="${1:-90}"
+  local i
+
+  styled 4 "Waiting for tunnel..."
+  for ((i = 1; i <= timeout; i++)); do
+    if is_connected; then
+      break
+    fi
+
+    if ! gp_process_running; then
+      break
+    fi
+
+    sleep 1
+    printf '.'
+  done
+  echo
+
+  if is_connected; then
+    styled 2 "Connected!"
+  elif ! gp_process_running; then
+    styled 1 "gpclient exited before the tunnel came up."
+    gp_show_log_tail
+  else
+    styled 3 "Still connecting... see $GP_LOG"
+    gp_show_log_tail
+  fi
+}
+
+# ── Tailscale Helpers ─────────────────────────────────────────────
+ts_is_running() {
+  local state
+  state=$(tailscale status --json 2>/dev/null | grep -oP '"BackendState":\s*"\K[^"]+') || return 1
+  [[ "$state" == "Running" ]]
+}
+
+ts_get_ip() {
+  tailscale ip -4 2>/dev/null
+}
+
+ts_dns_enabled() {
+  tailscale dns status 2>/dev/null | grep -qi '^Tailscale DNS: enabled'
+}
+
+ts_exit_node() {
+  local node
+  node=$(tailscale status --json 2>/dev/null |
+    grep -oP '"ExitNodeStatus":\s*\{[^}]*"ID":\s*"\K[^"]+') || true
+  if [[ -n "$node" ]]; then
+    # Resolve node ID to a hostname from peers
+    tailscale status --json 2>/dev/null |
+      grep -oP "\"$node\":\s*\{[^}]*\"HostName\":\s*\"\K[^\"]+" || echo "$node"
+  fi
+}
+
+# ── Actions ────────────────────────────────────────────────────────
+do_connect() {
+  local gateway
+  if has_gum; then
+    gateway=$(gum choose --header "Select gateway:" "${GATEWAYS[@]}") || return
+  else
+    printf '%s\n' "${GATEWAYS[@]}"
+    read -rp "Gateway: " gateway
+  fi
+  [[ -z "$gateway" ]] && return
+
+  styled 4 "Connecting to $gateway..."
+  gp_launch "$gateway" || return 1
+  gp_wait "$GP_WAIT_TIMEOUT"
+}
+
+do_quick() {
+  styled 4 "Connecting to $DEFAULT_GATEWAY..."
+  gp_launch "$DEFAULT_GATEWAY" || return 1
+  gp_wait "$GP_WAIT_TIMEOUT"
+}
+
+do_disconnect() {
+  styled 3 "Disconnecting..."
+  sudo gpclient disconnect
+}
+
+do_status() {
+  if is_connected; then
+    styled 2 "Connected"
+  else
+    styled 1 "Disconnected"
+  fi
+}
+
+# ── Tailscale Actions ─────────────────────────────────────────────
+ts_up() {
+  styled 4 "Connecting Tailscale..."
+  sudo tailscale up
+}
+
+ts_down() {
+  styled 3 "Disconnecting Tailscale..."
+  sudo tailscale down
+}
+
+ts_toggle_dns() {
+  if ts_dns_enabled; then
+    styled 3 "Disabling Tailscale DNS..."
+    sudo tailscale set --accept-dns=false
+  else
+    styled 4 "Enabling Tailscale DNS..."
+    sudo tailscale set --accept-dns
+  fi
+}
+
+ts_set_exit_node() {
+  local nodes node
+  nodes=$(tailscale exit-node list 2>/dev/null | tail -n +2 | head -n -1) || {
+    styled 1 "No exit nodes available"
+    return 1
+  }
+
+  if has_gum; then
+    node=$(echo "$nodes" | gum choose --header "Select exit node:") || return
+  else
+    echo "$nodes"
+    read -rp "Exit node hostname: " node
+  fi
+  [[ -z "$node" ]] && return
+
+  # Extract the hostname (first column)
+  local hostname
+  hostname=$(echo "$node" | awk '{print $1}')
+  styled 4 "Setting exit node to $hostname..."
+  sudo tailscale set --exit-node="$hostname"
+}
+
+ts_clear_exit_node() {
+  styled 3 "Clearing exit node..."
+  sudo tailscale set --exit-node=
+}
+
+ts_status() {
+  if ts_is_running; then
+    local ip
+    ip=$(ts_get_ip)
+    styled 2 "Tailscale: Running  ${ip:-}"
+    local dns="disabled"
+    ts_dns_enabled && dns="enabled"
+    local exit_node
+    exit_node=$(ts_exit_node)
+    echo "  DNS: $dns  Exit node: ${exit_node:-none}"
+  else
+    styled 1 "Tailscale: Stopped"
+  fi
+}
+
+# ── CLI Mode (vpn connect / vpn disconnect / etc) ─────────────────
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    connect) do_connect ;;
+    quick | q) do_quick ;;
+    disconnect) do_disconnect ;;
+    status | s)
+      do_status
+      echo
+      ts_status
+      ;;
+    ts)
+      shift
+      case "${1:-status}" in
+        status | s) ts_status ;;
+        up) ts_up ;;
+        down) ts_down ;;
+        dns) ts_toggle_dns ;;
+        exit-node)
+          if [[ -n "${2:-}" ]]; then
+            styled 4 "Setting exit node to $2..."
+            sudo tailscale set --exit-node="$2"
+          else
+            ts_clear_exit_node
+          fi
+          ;;
+        *)
+          styled 1 "Unknown ts command: $1"
+          exit 1
+          ;;
+      esac
+      ;;
+    log)
+      if [[ -f "$GP_LOG" ]]; then
+        tail -50 "$GP_LOG"
+      else
+        styled 3 "No log file yet"
+      fi
+      ;;
+    help | --help | -h)
+      cat <<EOF
+Usage: vpn [command]
+
+Commands:
+  (no args)      Interactive TUI menu
+  connect        Select a GP gateway and connect
+  quick          Connect to $DEFAULT_GATEWAY immediately
+  disconnect     Disconnect GlobalProtect
+  status         Show both GP and Tailscale status
+  log            Show last 50 lines of GP connect log
+
+  ts status      Tailscale status
+  ts up          Connect Tailscale
+  ts down        Disconnect Tailscale
+  ts dns         Toggle Tailscale DNS
+  ts exit-node   Clear exit node
+  ts exit-node X Set exit node to X
+
+  help           Show this help
+EOF
+      ;;
+    *)
+      styled 1 "Unknown command: $1"
+      exit 1
+      ;;
+  esac
+  exit
+fi
+
+# ── TUI Mode (interactive menu) ───────────────────────────────────
+pause_for_reading() {
+  echo
+  read -r -p "Press Enter to continue..." _
+}
+
+run_interactive_action() {
+  local status
+
+  set +e
+  "$@"
+  status=$?
+  set -e
+
+  if ((status != 0)); then
+    styled 1 "Command failed with exit code $status"
+  fi
+
+  pause_for_reading
+}
+
+draw() {
+  clear
+  echo "── GlobalProtect ─────────"
+  if is_connected; then
+    styled 2 "● Connected"
+  else
+    styled 1 "○ Disconnected"
+  fi
+  echo
+  echo "── Tailscale ─────────────"
+  if ts_is_running; then
+    local ip
+    ip=$(ts_get_ip)
+    styled 2 "● Running  ${ip:-}"
+    local dns="disabled"
+    ts_dns_enabled && dns="enabled"
+    local exit_node
+    exit_node=$(ts_exit_node)
+    echo "  DNS: $dns  Exit node: ${exit_node:-none}"
+  else
+    styled 1 "○ Stopped"
+  fi
+  echo
+}
+
+ts_menu() {
+  while true; do
+    draw
+
+    local items=()
+    if ts_is_running; then
+      items+=("TS: Disconnect")
+      local dns_label="disabled"
+      ts_dns_enabled && dns_label="enabled"
+      items+=("TS: Toggle DNS (currently $dns_label)")
+      local exit_node
+      exit_node=$(ts_exit_node)
+      if [[ -n "$exit_node" ]]; then
+        items+=("TS: Clear exit node ($exit_node)")
+      else
+        items+=("TS: Set exit node")
+      fi
+    else
+      items+=("TS: Connect")
+    fi
+    items+=("Back")
+
+    local choice
+    if has_gum; then
+      choice=$(gum choose "${items[@]}") || return
+    else
+      PS3="> "
+      select choice in "${items[@]}"; do break; done
+      [[ -z "${choice:-}" ]] && return
+    fi
+
+    case "$choice" in
+      "TS: Connect") run_interactive_action ts_up ;;
+      "TS: Disconnect") run_interactive_action ts_down ;;
+      "TS: Toggle DNS"*) run_interactive_action ts_toggle_dns ;;
+      "TS: Set exit node") run_interactive_action ts_set_exit_node ;;
+      "TS: Clear exit"*) run_interactive_action ts_clear_exit_node ;;
+      Back) return ;;
+    esac
+  done
+}
+
+while true; do
+  draw
+
+  items=()
+  if is_connected; then
+    items+=("GP: Disconnect")
+  else
+    items+=("GP: Connect" "GP: Quick connect ($DEFAULT_GATEWAY)")
+  fi
+  items+=("Tailscale ▸" "Quit")
+
+  if has_gum; then
+    choice=$(gum choose "${items[@]}") || break
+  else
+    PS3="> "
+    select choice in "${items[@]}"; do break; done
+    [[ -z "${choice:-}" ]] && break
+  fi
+
+  case "$choice" in
+    "GP: Connect") run_interactive_action do_connect ;;
+    "GP: Quick connect"*) run_interactive_action do_quick ;;
+    "GP: Disconnect") run_interactive_action do_disconnect ;;
+    "Tailscale ▸") ts_menu ;;
+    Quit) break ;;
+  esac
+done

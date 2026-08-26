@@ -109,7 +109,7 @@ export POWERLINE_NERD_FONTS=1
 # Try - dated experiment folders
 eval "$(ruby ~/.local/bin/try.rb init ~/tries)"
 
-. "$HOME/.local/bin/env"
+[ -f "$HOME/.local/bin/env" ] && . "$HOME/.local/bin/env"
 alias ga='git add'
 alias gc='git commit'
 alias gs='git status'

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# kde-term-run — open ghostty running a command in an interactive shell, so mise shims
+# and ~/.local/bin are on PATH (KDE .desktop launches don't source ~/.bashrc). The `-e`
+# also overrides ghostty's `command = tmux`, so the tool runs directly (not inside tmux).
+# Used by the kde-*.desktop launchers behind KDE global shortcuts (lazygit, vpn, ...).
+# shellcheck disable=SC2016  # inner $@ is for the spawned interactive bash, intentionally unexpanded here
+exec ghostty -e bash -ic 'exec "$@"' bash "$@"

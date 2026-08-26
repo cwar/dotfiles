@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Lazygit
+Comment=Lazygit TUI in a terminal
+Exec=/home/cwar/.local/bin/kde-term-run lazygit
+Icon=git
+Terminal=false
+Categories=Development;

@@ -1,0 +1,39 @@
+---
+tags: [ cli, docs, demo, agent ]
+---
+# Create a new demo document
+showboat init demo.md "My Demo Title"
+
+# Add commentary text
+showboat note demo.md "Here's what we're doing next."
+echo "piped text" | showboat note demo.md
+
+# Run code and capture output (prints stdout, appends to doc)
+showboat exec demo.md bash "echo hello"
+showboat exec demo.md python3 "print('hi')"
+cat script.sh | showboat exec demo.md bash
+
+# Add an image (copies file next to doc)
+showboat image demo.md screenshot.png
+showboat image demo.md '![Alt text](screenshot.png)'
+
+# Remove the most recent entry (undo mistakes)
+showboat pop demo.md
+
+# Re-run all code blocks and diff against recorded output
+showboat verify demo.md
+showboat verify demo.md --output updated.md
+
+# Emit commands that would recreate the document
+showboat extract demo.md
+showboat extract demo.md --filename other.md
+
+# Global options
+--workdir <dir>   Set cwd for code execution
+--version         Print version
+--help, -h        Show help
+
+# Notes
+# - exec prints captured output to stdout and exits with the command's exit code
+# - verify exits 0 if all outputs match, 1 if any differ
+# - use pop to remove a failed exec entry before retrying

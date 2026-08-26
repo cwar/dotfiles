@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Chrome (Work)
+Comment=Google Chrome — work profile (cwarren@spotify.com)
+Exec=/usr/bin/google-chrome --profile-directory="Default"
+Icon=google-chrome
+Terminal=false
+Categories=Network;WebBrowser;

@@ -45,6 +45,20 @@ gh pr diff <number> > /tmp/pr-<number>.diff
 
 **Important: Always use `bash` (heredocs/cat) to write temp files under `/tmp/pr-*`.** Do NOT use the `Write` or `Edit` tools for these files — those tools trigger permission prompts that cannot be auto-approved for `/tmp` paths.
 
+**Newly added files may be missing from the diff.** After saving, verify that every file from `gh pr diff <number> --name-only` has a corresponding `diff --git` entry in the diff file. Files that are empty, have only mode changes, or aren't captured by the diff algorithm can silently disappear. For each missing file:
+
+1. Fetch its content from the PR head: `git show "$(gh pr view <number> --json headRefOid -q .headRefOid):<path>"`
+2. Append a synthetic unified diff to `/tmp/pr-<number>.diff`:
+   ```
+   diff --git a/<path> b/<path>
+   new file mode 100644
+   --- /dev/null
+   +++ b/<path>
+   @@ -0,0 +1,<line_count> @@
+   +<each line prefixed with +>
+   ```
+   If `git show` returns nothing (truly empty file), still append the `diff --git` header and `new file mode` line so the file appears in the review page with a `+0 −0` indicator.
+
 Read the PR description carefully — it tells you what the author intended. Present a brief summary of what the PR is trying to do so the reviewer starts with shared context.
 
 ## Step 2: Plan the review phases
@@ -157,6 +171,112 @@ grep -rn 'from.*orders.*import\|import.*orders' --include='*.py' . | head -20
 
 Use the results to estimate blast radius and assign risk levels to phases. You won't get the precise graph data, but you can still identify which changes have the widest impact.
 
+## Step 2c: Supplemental Artifacts (optional, enriches review)
+
+After planning phases and gathering impact data, consider whether supplemental artifacts would help the reviewer understand the change faster. Artifacts are rendered in the HTML review page — either in a dedicated **📚 Context** tab (top-level) or inline within a phase.
+
+This step is entirely optional. Most small PRs don't need artifacts. Use them when the PR involves:
+- **Complex file relationships** — a dependency diagram saves the reviewer from mentally tracing imports
+- **Architectural changes** — before/after flow diagrams make refactors obvious
+- **Domain-specific context** — background that isn't an AI observation but helps understanding
+- **Related resources** — links to ADRs, Slack threads, related PRs, or docs mentioned in the description
+
+### Artifact types
+
+Three types are supported in the plan JSON:
+
+**`diagram`** — Mermaid diagram (rendered client-side via mermaid.js). Use for:
+- Module/file dependency graphs
+- Before/after request flows
+- State machine changes
+- Data flow through a pipeline
+
+```json
+{
+    "type": "diagram",
+    "title": "Module dependency graph",
+    "content": "graph LR\n  handler.py --> auth.py\n  handler.py --> db.py\n  auth.py --> tokens.py"
+}
+```
+
+**`reference`** — Link to a related resource. Use for:
+- Related PRs (previous/follow-up)
+- ADRs that explain the design choice
+- Documentation pages
+- Slack threads with design discussions
+- External specs or RFCs
+
+```json
+{
+    "type": "reference",
+    "title": "ADR-015: Structured Logging",
+    "url": "https://ghe.spotify.net/team/repo/blob/master/docs/adr/015-structured-logging.md",
+    "description": "Decision to use stdlib logging over third-party alternatives"
+}
+```
+
+**`note`** — Contextual explanation. Use for:
+- Background on why this change is being made
+- Domain concepts the reviewer might not know
+- Known gotchas or non-obvious constraints
+- Migration context ("this is step 2 of 4")
+
+```json
+{
+    "type": "note",
+    "title": "Background: Observability initiative",
+    "content": "This change is part of the Q2 observability initiative. All service entry points are getting structured logging. The auth service was done in PR #998."
+}
+```
+
+### Where to place artifacts
+
+- **Top-level** (`"artifacts"` at the root of the plan JSON): Shown in a dedicated **📚 Context** tab. Use for cross-cutting context that applies to the whole PR — dependency graphs, related resources, background notes.
+- **Per-phase** (`"artifacts"` inside a phase object): Shown inline within that phase, between the diffs and AI observations. Use for phase-specific context — a before/after diagram for a refactored function, a link to the spec that defines the API being implemented.
+
+### When NOT to create artifacts
+
+- Small PRs (< 50 lines) — the diff is the context
+- Pure formatting/style changes — nothing structural to diagram
+- When the PR description already explains everything clearly
+- When it would duplicate what the AI observations already say
+
+The goal is to **reduce cognitive load**, not add more to read. If an artifact doesn't save the reviewer time, skip it.
+
+### Generating diagrams
+
+Use [Mermaid syntax](https://mermaid.js.org/syntax/flowchart.html). Common patterns:
+
+```
+# File dependency graph
+graph LR
+  A[handler.py] --> B[auth.py]
+  A --> C[db.py]
+  B --> D[tokens.py]
+
+# Before/after flow (see subgraph ordering note below)
+graph LR
+  subgraph After
+    R2[Request] --> M2[Middleware] --> H2[Handler] --> D2[DB]
+  end
+  subgraph Before
+    R1[Request] --> H1[Handler] --> D1[DB]
+  end
+
+# State machine
+stateDiagram-v2
+  [*] --> Pending
+  Pending --> Processing: start()
+  Processing --> Complete: finish()
+  Processing --> Failed: error()
+```
+
+Keep diagrams small and focused — 5–15 nodes max. If it needs more, split into multiple diagrams.
+
+**Subgraph ordering in Mermaid:** Mermaid renders subgraphs in **reverse definition order** — the *last* defined subgraph appears on the *left* (in `graph LR`) or *top* (in `graph TD`). For before/after diagrams, always define **"After" first, then "Before"** so that "Before" renders on the left and "After" on the right, matching natural left-to-right reading order and any "before → after" title.
+
+**Quoting special characters in Mermaid:** Edge labels containing `/`, `*`, `?`, or other special characters must be double-quoted: `-->|"gh-readonly-queue/..."|` not `-->|gh-readonly-queue/*|`. Node labels with special characters also need quoting: `CT["PRE_MERGE / POST_MERGE"]`.
+
 ## Step 3: Gather evidence, then generate the review page
 
 Before writing any observations, do due diligence on the codebase — especially for IaC, check files **outside the diff** that reference changed resources. Understand module nesting, provider references, depends_on chains. This context prevents false positives in your observations.
@@ -217,11 +337,19 @@ Create a plan JSON file using `bash` with a heredoc (see [scripts/generate-revie
     "changed_files": 7,
     "url": "https://...",
     "description": "What this PR does",
+    "artifacts": [
+        {"type": "diagram", "title": "Module dependencies", "content": "graph LR\n  A --> B"},
+        {"type": "reference", "title": "Related ADR", "url": "https://...", "description": "Why we chose this approach"},
+        {"type": "note", "title": "Background", "content": "This is part of the Q2 migration..."}
+    ],
     "phases": [
         {
             "name": "Phase Name",
             "files": ["path/to/file1"],
             "description": "Why these files are grouped",
+            "artifacts": [
+                {"type": "diagram", "title": "Before/After flow", "content": "graph TD\n  A --> B"}
+            ],
             "ai_notes": [
                 {"severity": "good", "text": "Observation"},
                 {"severity": "suggestion", "text": "Consider this", "evidence": [
@@ -254,7 +382,9 @@ The `evidence` field is an array of `{"command": "...", "output": "..."}` object
 python3 <skill-dir>/scripts/generate-review.py \
   --diff /tmp/pr-<number>.diff \
   --plan /tmp/pr-<number>-plan.json \
-  --output /tmp/pr-<number>-review.html
+  --output /tmp/pr-<number>-review.html \
+  --repo-dir "$(git rev-parse --show-toplevel)" \
+  --head-sha "$(gh pr view <number> --json headRefOid -q .headRefOid)"
 
 xdg-open /tmp/pr-<number>-review.html
 ```
@@ -281,8 +411,9 @@ The reviewer pastes flagged items mid-review. This means they think the AI got s
 2. **Investigate with evidence** — run real commands to verify. The reviewer may be right (and often is — they know the codebase better). Gather new evidence to support the corrected understanding.
 3. **Acknowledge corrections honestly** — if you were wrong, say so and explain what you misunderstood.
 4. **Update the plan JSON** with corrected observations and fresh evidence. Turn wrong observations into correct ones backed by shell command output.
-5. **Regenerate the HTML** — the reviewer's comments and unflagged items persist in localStorage, so they won't lose work. The updated evidence blocks will reflect the corrected understanding.
-6. Tell the reviewer the page is updated and they can continue.
+5. **Add a top-level `note` artifact titled `Prior inline feedback answers`** whenever the reviewer pasted inline comments or prior flagged observations. This note must explicitly answer every pasted comment, including whether it was resolved by a code change, resolved by explanation, left unresolved for follow-up, or intentionally not changed. Treat answered items as resolved in the refreshed review: do not keep re-presenting them as open questions unless they still require action. If the HTML UI supports hiding/resolving prior comments, mark answered comments resolved; otherwise the note is the source of truth for resolved vs unresolved prior feedback.
+6. **Regenerate the HTML** — the reviewer's comments and unflagged items persist in localStorage, so they won't lose work. The updated evidence blocks and prior-feedback answers will reflect the corrected understanding.
+7. Tell the reviewer the page is updated and call out any comments that remain unresolved.
 
 This loop can happen multiple times. Each time, the AI's understanding improves and the observations get more accurate.
 
@@ -382,6 +513,7 @@ Draft the comments based on the combined findings and let the reviewer approve t
 
 ## Tips
 
+- **Use backticks for code references** — wrap identifiers, function names, types, annotations, file paths, and other code references in `` `backticks` `` in observation text, artifact content, and descriptions. The HTML renderer converts these to styled `<code>` tags for visual distinction. For example: "Using `Optional<RebuiltFrom>` is consistent with `AbstractBuild`" rather than "Using Optional<RebuiltFrom> is consistent with AbstractBuild".
 - **Show your work** — every non-trivial observation should have evidence (command + output). This prevents hallucination and lets the reviewer verify your reasoning without leaving the review page. If you can't produce evidence for a claim, downgrade it to a question.
 - **Do your homework before writing observations** — check module nesting, provider references, depends_on chains, and files outside the diff. False positives erode trust faster than false negatives.
 - **Read the PR description first** — understand intent before judging implementation.

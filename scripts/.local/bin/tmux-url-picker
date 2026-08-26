@@ -3,49 +3,175 @@
 
 set -euo pipefail
 
-# Capture visible pane content + scrollback. -J joins wrapped lines so a URL
-# that wrapped at the terminal width survives as a single token.
-CONTENT=$(tmux capture-pane -p -J -S -500 2>/dev/null || tmux capture-pane -p -J)
+extract_urls() {
+  local input_file status
 
-# tmux's -J only rejoins rows the *terminal* soft-wrapped -- it tracks a per-line
-# wrap flag and -J consults only that. TUIs that wrap their own output (Claude
-# Code/Ink, for one) emit real newlines instead, so the flag is never set and a
-# long URL arrives as N separate full-width rows; extraction then keeps only the
-# first row. Rejoin those heuristically: a row that reaches the wrap column
-# (within WRAP_SLACK, to allow for a boxed/padded UI) *and* ends mid-URL-token is
-# a continuation candidate, and the next row is glued on when it starts with a
-# URL-safe character. The <= w upper bound is load-bearing: a row that -J already
-# rejoined is *longer* than the pane, and must not be glued to what follows it.
-PANE_WIDTH=$(tmux display-message -p '#{pane_width}' 2>/dev/null || echo 0)
-WRAP_SLACK=4
+  input_file=$(mktemp)
+  cat >"$input_file"
 
-CONTENT=$(printf '%s\n' "$CONTENT" | awk -v w="$PANE_WIDTH" -v slack="$WRAP_SLACK" '
-    BEGIN { urlstart = "^[A-Za-z0-9._~:/?#@!$&*+,;=%()-]" }
-    {
-        # A row that opens with its own scheme starts a new URL, never
-        # continues a wrapped one -- gluing it would swallow it into the
-        # previous match entirely (grep -oP matches non-overlapping).
-        if (held && wrapped && $0 ~ urlstart && $0 !~ "^(https?|ftp|file)://")
-            buf = buf $0
-        else {
-            if (held) print buf
-            buf = $0; held = 1
-        }
-        # Re-test against buf, not $0: a continuation row is percent-encoded and
-        # has no literal "://" of its own, so a 3+ row URL would stop joining.
-        wrapped = (w > 0 && length($0) <= w && length($0) >= w - slack &&
-                   buf ~ "://[^ \t]*$")
-    }
-    END { if (held) print buf }
-')
+  TMUX_URL_PICKER_WIDTH="${TMUX_URL_PICKER_WIDTH:-0}" python3 - "$input_file" <<'PY'
+import os
+import re
+import sys
 
-# Extract URLs (http/https/ftp, git@, file://, bare domains)
-# Commas and semicolons are legal *inside* a URL (RFC 3986 sub-delims) and turn up
-# in real query strings (?methods=a,b), so they must not terminate a match. They're
-# stripped only when trailing, where they're almost always prose punctuation.
-URLS=$(echo "$CONTENT" | grep -oP '(https?://|ftp://|file://)[^\s<>"'\''\)\]\}│┃|]+' |
-       sed -E 's/[.,;:!?]+$//' |  # trim trailing prose punctuation
-       awk '!seen[$0]++')  # deduplicate, preserve order
+with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+    text = handle.read()
+
+try:
+    pane_width = int(os.environ.get("TMUX_URL_PICKER_WIDTH", "0"))
+except ValueError:
+    pane_width = 0
+
+ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+url_start_re = re.compile(r"(?:https?|ftp|file)://")
+url_pattern = re.compile(r"(?:https?|ftp|file)://[^\s<>\"'\)\]\}│┃|]+")
+url_at_end_re = re.compile(r"(?:https?|ftp|file)://[^\s<>\"'\)\]\}│┃|]*$")
+continuation_re = re.compile(r"^\s*([A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+)\s*$")
+strong_url_chars_re = re.compile(r"[/?:#@!$&'()*+,;=%._~-]")
+
+logical_lines = []
+current = None
+# Width of the last *physical* row folded into `current`. Tracked separately
+# because `current` accumulates across joins, so len(current) stops describing
+# the row once anything has been glued on.
+current_row_len = 0
+
+for raw_line in text.splitlines():
+    line = ansi_re.sub("", raw_line).rstrip()
+
+    if current and url_at_end_re.search(current):
+        continuation = continuation_re.match(line)
+        if continuation and not url_start_re.search(line):
+            chunk = continuation.group(1)
+            previous_line_was_full = (
+                pane_width > 0 and pane_width - 2 <= current_row_len <= pane_width
+            )
+            # A row *wider* than the pane is one tmux -J already rejoined: it is
+            # complete by construction, so it must never absorb the row after it.
+            previous_row_overflowed = pane_width > 0 and current_row_len > pane_width
+            chunk_looks_urlish = bool(strong_url_chars_re.search(chunk))
+            previous_ends_mid_url_token = current.endswith(("/", "?", "#", "&", "=", "%", ".", "-", "_", "~"))
+
+            if not previous_row_overflowed and (
+                previous_line_was_full or chunk_looks_urlish or previous_ends_mid_url_token
+            ):
+                current += chunk
+                current_row_len = len(line)
+                continue
+
+    if current is not None:
+        logical_lines.append(current)
+    current = line
+    current_row_len = len(line)
+
+if current is not None:
+    logical_lines.append(current)
+
+seen = set()
+for line in logical_lines:
+    for match in url_pattern.finditer(line):
+        url = match.group(0).rstrip(".,;:!?)")
+        if url and url not in seen:
+            seen.add(url)
+            print(url)
+PY
+  status=$?
+  rm -f "$input_file"
+  return "$status"
+}
+
+assert_extract() {
+  local name input expected actual
+
+  name=$1
+  input=$2
+  expected=$3
+  actual=$(printf '%s' "$input" | TMUX_URL_PICKER_WIDTH=72 extract_urls)
+
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'not ok - %s\n' "$name" >&2
+    printf 'expected:\n%s\n' "$expected" >&2
+    printf 'actual:\n%s\n' "$actual" >&2
+    return 1
+  fi
+
+  printf 'ok - %s\n' "$name"
+}
+
+run_self_tests() {
+  local failures input expected
+
+  failures=0
+
+  input=$(
+    cat <<'EOF'
+https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c25
+0a-e61b-44d9-88ed-594d1962f5e&response_type=code&redirect_uri=htt
+ps%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=o
+rg%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessio
+ns%3Aclaude_code+user%3Amcp_server+user%3Afile_upload&code_chall
+enge=mzV4Gv2bIpMlyeryPUSdC_TznSFXEK_tXgPEzZP8FVA&code_challenge_m
+ethod=S256&state=QIEzqZb0jmxGNPE7tggOMmRlZk4aUrxhzwLeEICEOPo
+EOF
+  )
+  expected=$(printf '%s' "$input" | tr -d '\n')
+  assert_extract "joins wrapped oauth URL" "$input" "$expected" || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+Use https://example.com/login
+thanks
+EOF
+  )
+  expected="https://example.com/login"
+  assert_extract "does not join ordinary following text" "$input" "$expected" || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+https://example.com/a
+https://example.com/a
+https://example.com/b.
+EOF
+  )
+  expected=$(
+    cat <<'EOF'
+https://example.com/a
+https://example.com/b
+EOF
+  )
+  assert_extract "deduplicates and trims trailing punctuation" "$input" "$expected" || failures=$((failures + 1))
+
+  input='https://verify.proton.me/?methods=ownership-email,ownership-sms&token=1grPFtm'
+  expected="$input"
+  assert_extract "keeps commas inside a query string" "$input" "$expected" || failures=$((failures + 1))
+
+  # A row wider than the pane is one tmux -J already rejoined; it must not
+  # absorb the following row even though that row looks URL-ish.
+  input=$(
+    cat <<'EOF'
+https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+next/token
+EOF
+  )
+  expected='https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  assert_extract "does not extend a -J rejoined row" "$input" "$expected" || failures=$((failures + 1))
+
+  if ((failures > 0)); then
+    return 1
+  fi
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  run_self_tests
+  exit $?
+fi
+
+# Capture visible pane content + scrollback visible area. -J asks tmux to join
+# terminal-soft-wrapped lines; extract_urls also handles hard-wrapped URL text
+# emitted by TUIs.
+PANE_WIDTH=$(tmux display-message -p '#{pane_width}' 2>/dev/null || printf '0')
+CONTENT=$(tmux capture-pane -p -J -S -500 2>/dev/null || tmux capture-pane -p -S -500 2>/dev/null || tmux capture-pane -p)
+URLS=$(printf '%s\n' "$CONTENT" | TMUX_URL_PICKER_WIDTH="$PANE_WIDTH" extract_urls || true)
 
 if [ -z "$URLS" ]; then
     tmux display-message "No URLs found on screen"

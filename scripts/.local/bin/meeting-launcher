@@ -1,0 +1,97 @@
+#!/bin/bash
+# Meeting Launcher - fetch upcoming Google Calendar events and join meetings via rofi
+# Uses a Google Apps Script web app to read calendar data (no OAuth needed)
+# Requires: curl, jq, rofi
+
+CALENDAR_URL="https://script.google.com/macros/s/AKfycbzUPuPQPrzNPEFnfDI-c4GMqT46HKdIMnWXNTrQAbfoicCEu66VLhStVfm8tZ3sQE1X/exec"
+CACHE_TTL=120  # seconds to cache results
+CACHE_FILE="/tmp/meeting-launcher-cache"
+CACHE_TS="/tmp/meeting-launcher-ts"
+
+# Use cache if fresh enough
+now=$(date +%s)
+use_cache=false
+if [[ -f "$CACHE_TS" && -f "$CACHE_FILE" ]]; then
+    cached_at=$(cat "$CACHE_TS")
+    if (( now - cached_at < CACHE_TTL )); then
+        use_cache=true
+    fi
+fi
+
+if [[ "$use_cache" == true ]]; then
+    json=$(cat "$CACHE_FILE")
+else
+    json=$(curl -sL "$CALENDAR_URL" 2>&1)
+
+    if [[ -z "$json" ]] || ! echo "$json" | jq empty 2>/dev/null; then
+        notify-send "Meeting Launcher" "Failed to fetch calendar data"
+        exit 1
+    fi
+
+    echo "$json" > "$CACHE_FILE"
+    echo "$now" > "$CACHE_TS"
+fi
+
+# Filter out all-day events (where duration >= 24h) and build display
+readarray -t events < <(echo "$json" | jq -c '.[]')
+
+declare -a display_lines
+declare -a urls
+
+for event in "${events[@]}"; do
+    title=$(echo "$event" | jq -r '.title')
+    start_iso=$(echo "$event" | jq -r '.start')
+    end_iso=$(echo "$event" | jq -r '.end')
+    url=$(echo "$event" | jq -r '.url // ""')
+
+    # Skip all-day events (duration >= 23 hours)
+    start_epoch=$(date -d "$start_iso" +%s 2>/dev/null) || continue
+    end_epoch=$(date -d "$end_iso" +%s 2>/dev/null) || continue
+    duration=$(( end_epoch - start_epoch ))
+    (( duration >= 82800 )) && continue
+
+    # Format time
+    display_time=$(date -d "$start_iso" +"%l:%M %p" 2>/dev/null)
+    display_time="${display_time# }"
+
+    # Detect meeting provider
+    tag=""
+    if [[ -n "$url" && "$url" =~ ^https?:// ]]; then
+        if [[ "$url" == *"meet.google"* ]]; then
+            tag=" [Meet]"
+        elif [[ "$url" == *"zoom"* ]]; then
+            tag=" [Zoom]"
+        elif [[ "$url" == *"teams"* ]]; then
+            tag=" [Teams]"
+        else
+            tag=" [Link]"
+        fi
+    fi
+
+    display_lines+=("${display_time}  ${title}${tag}")
+    urls+=("${url}")
+done
+
+if [[ ${#display_lines[@]} -eq 0 ]]; then
+    notify-send "Meeting Launcher" "No upcoming meetings"
+    exit 0
+fi
+
+# Build rofi input
+rofi_input=""
+for line in "${display_lines[@]}"; do
+    rofi_input+="${line}"$'\n'
+done
+
+selected_idx=$(printf '%s' "$rofi_input" | rofi -dmenu -i -p " Meetings" -format i \
+    -theme-str 'window {width: 45%;}')
+
+[[ -z "$selected_idx" ]] && exit 0
+
+selected_url="${urls[$selected_idx]}"
+
+if [[ -n "$selected_url" && "$selected_url" =~ ^https?:// ]]; then
+    xdg-open "$selected_url" &
+else
+    notify-send "Meeting Launcher" "No meeting link for this event"
+fi

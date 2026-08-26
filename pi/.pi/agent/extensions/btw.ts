@@ -107,52 +107,77 @@ export default function btwExtension(pi: ExtensionAPI): void {
 			const allMessages: Message[] = [...contextMessages, sideQuestionMessage];
 
 			// Make the API call with a loader spinner
-			const result = await ctx.ui.custom<string | null>(
-				(tui, theme, _kb, done) => {
-					const loader = new BorderedLoader(
-						tui,
-						theme,
-						`Answering side question…`,
+			const result = await ctx.ui.custom<
+				| { ok: true; text: string }
+				| { ok: false; cancelled: true }
+				| { ok: false; error: string }
+			>((tui, theme, _kb, done) => {
+				const loader = new BorderedLoader(
+					tui,
+					theme,
+					`Answering side question…`,
+				);
+				loader.onAbort = () => done({ ok: false, cancelled: true });
+
+				const doQuery = async () => {
+					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
+					if (!auth.ok) {
+						throw new Error(auth.error);
+					}
+
+					const response = await complete(
+						ctx.model!,
+						{ messages: allMessages },
+						{
+							apiKey: auth.apiKey,
+							headers: auth.headers,
+							signal: loader.signal,
+						},
 					);
-					loader.onAbort = () => done(null);
 
-					const doQuery = async () => {
-						const apiKey = await ctx.modelRegistry.getApiKey(ctx.model!);
+					if (response.stopReason === "aborted") {
+						return { ok: false as const, cancelled: true as const };
+					}
 
-						const response = await complete(
-							ctx.model!,
-							{ messages: allMessages },
-							{ apiKey, signal: loader.signal },
-						);
+					if (response.stopReason === "error") {
+						throw new Error(response.errorMessage ?? "Model returned an error");
+					}
 
-						if (response.stopReason === "aborted") {
-							return null;
-						}
-
-						return response.content
+					return {
+						ok: true as const,
+						text: response.content
 							.filter(
 								(c): c is { type: "text"; text: string } =>
 									c.type === "text",
 							)
 							.map((c) => c.text)
-							.join("\n");
+							.join("\n"),
 					};
+				};
 
-					doQuery()
-						.then(done)
-						.catch((err) => {
-							console.error("btw query failed:", err);
-							done(null);
+				doQuery()
+					.then(done)
+					.catch((err) => {
+						console.error("btw query failed:", err);
+						done({
+							ok: false,
+							error: err instanceof Error ? err.message : String(err),
 						});
+					});
 
-					return loader;
-				},
-			);
+				return loader;
+			});
 
-			if (result === null) {
-				ctx.ui.notify("Cancelled", "info");
+			if (!result.ok) {
+				if ("cancelled" in result) {
+					ctx.ui.notify("Cancelled", "info");
+				} else {
+					ctx.ui.notify(`/btw failed: ${result.error}`, "error");
+				}
 				return;
 			}
+
+			const answer = result.text || "(No text response)";
 
 			// Display the answer in a dismissable panel (with fork option)
 			const action = await ctx.ui.custom<"dismiss" | "fork">(
@@ -172,7 +197,7 @@ export default function btwExtension(pi: ExtensionAPI): void {
 							0,
 						),
 					);
-					container.addChild(new Markdown(result, 1, 1, mdTheme));
+					container.addChild(new Markdown(answer, 1, 1, mdTheme));
 					container.addChild(
 						new Text(
 							theme.fg("dim", "Space/Enter/Esc to dismiss") +
@@ -225,7 +250,7 @@ export default function btwExtension(pi: ExtensionAPI): void {
 								{
 									type: "text",
 									text:
-										result +
+										answer +
 										"\n\n---\n*This was a quick /btw answer without tool access. " +
 										"You can now ask follow-up questions — I have full tool access in this session.*",
 								},

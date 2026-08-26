@@ -1,0 +1,18 @@
+{
+  "skills": [
+    "~/.claude/skills",
+    "~/.claude/plugins/marketplaces/anthropic-agent-skills/skills",
+    "~/.claude/plugins/marketplaces/obsidian-skills/skills",
+    "~/.claude/plugins/marketplaces/claude-plugins-official/plugins/claude-md-management/skills",
+    "~/.claude/plugins/marketplaces/claude-plugins-official/plugins/playground/skills"
+  ],
+  "enableSkillCommands": true,
+  "lastChangelogVersion": "0.79.1",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "high",
+  "hideThinkingBlock": false,
+  "quietStartup": true,
+  "packages": [],
+  "theme": "dark"
+}
