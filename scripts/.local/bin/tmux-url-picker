@@ -8,8 +8,11 @@ set -euo pipefail
 CONTENT=$(tmux capture-pane -p -J -S -500 2>/dev/null || tmux capture-pane -p -J)
 
 # Extract URLs (http/https/ftp, git@, file://, bare domains)
-URLS=$(echo "$CONTENT" | grep -oP '(https?://|ftp://|file://)[^\s<>"'\''\)\]\}│┃|,;]+' | 
-       sed 's/[.)]*$//' |  # trim trailing periods/parens
+# Commas and semicolons are legal *inside* a URL (RFC 3986 sub-delims) and turn up
+# in real query strings (?methods=a,b), so they must not terminate a match. They're
+# stripped only when trailing, where they're almost always prose punctuation.
+URLS=$(echo "$CONTENT" | grep -oP '(https?://|ftp://|file://)[^\s<>"'\''\)\]\}│┃|]+' |
+       sed -E 's/[.,;:!?]+$//' |  # trim trailing prose punctuation
        awk '!seen[$0]++')  # deduplicate, preserve order
 
 if [ -z "$URLS" ]; then
