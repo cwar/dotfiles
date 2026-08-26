@@ -7,6 +7,38 @@ set -euo pipefail
 # that wrapped at the terminal width survives as a single token.
 CONTENT=$(tmux capture-pane -p -J -S -500 2>/dev/null || tmux capture-pane -p -J)
 
+# tmux's -J only rejoins rows the *terminal* soft-wrapped -- it tracks a per-line
+# wrap flag and -J consults only that. TUIs that wrap their own output (Claude
+# Code/Ink, for one) emit real newlines instead, so the flag is never set and a
+# long URL arrives as N separate full-width rows; extraction then keeps only the
+# first row. Rejoin those heuristically: a row that reaches the wrap column
+# (within WRAP_SLACK, to allow for a boxed/padded UI) *and* ends mid-URL-token is
+# a continuation candidate, and the next row is glued on when it starts with a
+# URL-safe character. The <= w upper bound is load-bearing: a row that -J already
+# rejoined is *longer* than the pane, and must not be glued to what follows it.
+PANE_WIDTH=$(tmux display-message -p '#{pane_width}' 2>/dev/null || echo 0)
+WRAP_SLACK=4
+
+CONTENT=$(printf '%s\n' "$CONTENT" | awk -v w="$PANE_WIDTH" -v slack="$WRAP_SLACK" '
+    BEGIN { urlstart = "^[A-Za-z0-9._~:/?#@!$&*+,;=%()-]" }
+    {
+        # A row that opens with its own scheme starts a new URL, never
+        # continues a wrapped one -- gluing it would swallow it into the
+        # previous match entirely (grep -oP matches non-overlapping).
+        if (held && wrapped && $0 ~ urlstart && $0 !~ "^(https?|ftp|file)://")
+            buf = buf $0
+        else {
+            if (held) print buf
+            buf = $0; held = 1
+        }
+        # Re-test against buf, not $0: a continuation row is percent-encoded and
+        # has no literal "://" of its own, so a 3+ row URL would stop joining.
+        wrapped = (w > 0 && length($0) <= w && length($0) >= w - slack &&
+                   buf ~ "://[^ \t]*$")
+    }
+    END { if (held) print buf }
+')
+
 # Extract URLs (http/https/ftp, git@, file://, bare domains)
 # Commas and semicolons are legal *inside* a URL (RFC 3986 sub-delims) and turn up
 # in real query strings (?methods=a,b), so they must not terminate a match. They're
