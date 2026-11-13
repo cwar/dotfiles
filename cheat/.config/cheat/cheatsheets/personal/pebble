@@ -1,0 +1,56 @@
+---
+tags: [ pebble, smartwatch, embedded, sdk ]
+---
+# pebble - my Time 2 dev environment
+# Platform target for Pebble Time 2 = "emery". CLI installed via uv (own py3.13).
+# Setup breadcrumb: ~/tries/2026-06-06-pebble/BREADCRUMB.md
+
+# project lifecycle
+pebble new-project myface              Create a new C project
+pebble new-project --alloy myapp       Create a new pure-JavaScript (Alloy) project
+pebble build                           Build .pbw for all platforms (run in project dir)
+pebble clean                           Remove build artifacts
+
+# emulator (QEMU) - emery = Time 2
+pebble-shot                            BEST: build? no; install + screenshot + auto-kill emu (run in project dir)
+pebble-shot -b                         build first, then install + screenshot + auto-kill
+pebble-shot -k                         keep emulator running afterward (don't auto-kill)
+pebble-shot -p emery -o out.png        pick platform / output path
+# pebble-shot lives in ~/dotfiles/scripts/.local/bin/ (stowed). Handles the flaky
+# cold-boot install (retries warm) and ALWAYS tears down the emulator so no
+# leftover/zombie QEMU windows pile up.
+pebble install --emulator emery        Boot emulator + install app (reuses running emu)
+pebble screenshot --emulator emery out.png   Capture emulator screen to PNG
+pebble logs --emulator emery           Stream app logs from emulator
+pebble kill                            Stop ALL running emulators (closes the QEMU window)
+kill $(pgrep qemu-pebble)              Safe manual kill (do NOT pkill -f qemu-pebble: self-matches)
+
+# physical watch (over Bluetooth via companion app)
+pebble install --phone <ip>            Install to watch via phone on same network
+pebble logs --phone <ip>               Stream logs from physical watch
+
+# SDK management
+pebble sdk install latest              Install latest SDK
+pebble sdk list                        List installed + available SDKs
+pebble --version                       Show tool + active SDK version
+
+# install / update the tool itself (uv-managed, pinned to py3.13)
+uv tool install pebble-tool --python 3.13     Install (system py3.14 is too new)
+uv tool upgrade pebble-tool                    Upgrade the CLI
+
+# platform codenames
+aplite     Pebble Classic / Steel (144x168 b&w)
+basalt     Pebble Time / Time Steel (color)
+chalk      Pebble Time Round
+diorite    Pebble 2
+flint      Pebble 2 Duo
+emery      Pebble Time 2   <-- my watch
+gabbro     Pebble Round 2
+
+# watchface agent skill (Claude Code)
+# Ask Claude: "make me an animated underwater watchface"  -> skill: pebble-watchface
+# Repo: ~/.local/share/pebble-watchface-agent-skill (git pull to update)
+
+# resources
+# Browser IDE (no install): https://cloudpebble.repebble.com
+# SDK docs: https://developer.repebble.com/sdk/

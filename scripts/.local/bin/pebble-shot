@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# pebble-shot — build (optional), install, screenshot, and ALWAYS tear down the
+# Pebble QEMU emulator in one shot, so no zombie/leftover emulator windows linger.
+#
+# Why this exists: only one pebble client can hold the qemu console at a time, and
+# `pebble screenshot`/`install` auto-boot a *daemonized* emulator (reparents to
+# init) that outlives the command. A backgrounded/wedged client then makes the
+# next command — and even `pebble kill` — appear to hang. This wrapper keeps every
+# step in the foreground with timeouts and guarantees cleanup.
+#
+# Usage:
+#   pebble-shot [-p PLATFORM] [-o OUTPUT.png] [-b|--build] [-k|--keep] [-h]
+#     -p PLATFORM   emulator platform (default: emery = Pebble Time 2)
+#     -o OUTPUT     screenshot path   (default: screenshot_<platform>.png)
+#     -b, --build   run `pebble build` first
+#     -k, --keep    leave the emulator running afterward (don't auto-kill)
+#     -h, --help    show this help
+#
+# Run it from inside a Pebble project directory (one containing package.json).
+
+set -uo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+
+PLATFORM="emery"
+OUTPUT=""
+DO_BUILD=0
+KEEP=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) PLATFORM="$2"; shift 2 ;;
+    -o) OUTPUT="$2"; shift 2 ;;
+    -b|--build) DO_BUILD=1; shift ;;
+    -k|--keep)  KEEP=1; shift ;;
+    -h|--help)
+      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo "pebble-shot: unknown arg '$1' (try -h)" >&2; exit 2 ;;
+  esac
+done
+[ -n "$OUTPUT" ] || OUTPUT="screenshot_${PLATFORM}.png"
+
+if [ ! -f package.json ]; then
+  echo "pebble-shot: no package.json here — run this inside a Pebble project dir." >&2
+  exit 1
+fi
+
+# Safe teardown: kill qemu by comm name (never matches this script), and the JS
+# sidecar by pattern while excluding our own PID. (pkill -f qemu-pebble is unsafe
+# from an interactive shell because the pattern can match the calling command.)
+kill_emu() {
+  local self=$$ pids
+  pids="$(pgrep qemu-pebble 2>/dev/null)"
+  [ -n "$pids" ] && kill $pids 2>/dev/null
+  sleep 1
+  pids="$(pgrep qemu-pebble 2>/dev/null)"
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+  # also reap a wedged install/screenshot client holding a zombie
+  pids="$(pgrep -f 'pebble (install|screenshot)' 2>/dev/null | grep -vw "$self")"
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+  pids="$(pgrep -f 'pypkjs' 2>/dev/null | grep -vw "$self")"
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+  sleep 1
+}
+
+if [ "$DO_BUILD" -eq 1 ]; then
+  echo ">> pebble build"
+  pebble build || { echo "pebble-shot: build failed" >&2; exit 1; }
+fi
+
+# Install. A WARM emulator installs in ~2s; a COLD boot often stalls on the
+# pypkjs handshake but still brings qemu up — so if the first try fails with an
+# emulator now running, retry once (warm). We deliberately do NOT pre-kill: a
+# running emulator is reused (no extra window), and everything is torn down at
+# the end regardless.
+install_once() {
+  local out
+  out="$(timeout "$1" pebble install --emulator "$PLATFORM" 2>&1)"
+  echo "$out" | tail -2
+  echo "$out" | grep -q "install succeeded"
+}
+install_app() {
+  echo ">> install -> $PLATFORM (cold boot may take ~40s)"
+  install_once 50 && return 0
+  if pgrep qemu-pebble >/dev/null; then
+    echo ">> retrying install on warm emulator..."
+    install_once 45 && return 0
+  fi
+  return 1
+}
+if ! install_app; then
+  echo "pebble-shot: could not install on emulator" >&2
+  kill_emu
+  exit 1
+fi
+
+echo ">> screenshot -> $OUTPUT"
+timeout 45 pebble screenshot --no-open --emulator "$PLATFORM" "$OUTPUT" 2>&1 | tail -1
+
+if [ "$KEEP" -eq 1 ]; then
+  echo ">> leaving emulator running (--keep). Close later with: kill \$(pgrep qemu-pebble)"
+else
+  echo ">> tearing down emulator..."
+  kill_emu
+  pgrep qemu-pebble >/dev/null && echo "   warn: qemu still up" || echo "   emulator closed cleanly"
+fi
+
+if [ -f "$OUTPUT" ]; then
+  echo ">> done: $(realpath "$OUTPUT")"
+else
+  echo "pebble-shot: screenshot not produced ($OUTPUT)" >&2
+  exit 1
+fi
