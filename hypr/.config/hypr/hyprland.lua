@@ -63,32 +63,40 @@ end
 ------------------
 ---- MONITORS ----
 ------------------
+--
+-- Goal: there is ALWAYS a screen somewhere. Invariants, re-asserted on start, every
+-- reload, lid open/close, monitor hotplug, resume from sleep, and a 15 s poll:
+--
+--   * eDP-1 (the laptop panel) is disabled ONLY while the lid is closed AND an external
+--     display is physically connected (kernel DRM connector status).
+--   * In every other situation eDP-1 is enabled. Lid open => panel on, unconditionally.
+--
+-- Hyprland 0.56 Lua facts that shaped this (all verified 2026-08-25, see
+-- ~/tries/2026-08-25-cant-see-screen/BREADCRUMB.md):
+--   * hl.monitor() only takes effect while this file is being (re)loaded. Calling it from
+--     a bind/event callback does nothing visible, and `hyprctl keyword monitor` is refused
+--     ("keyword can't work with non-legacy parsers"). The ONLY way to re-apply monitor
+--     rules at runtime is `hyprctl reload`.
+--   * hl.get_monitors() / hl.get_monitor() see only ENABLED outputs (a disabled eDP-1 is
+--     simply absent), include the headless "FALLBACK" output that appears when nothing is
+--     enabled, and are EMPTY while this file runs at startup. So "#hl.get_monitors() > 1"
+--     is not a valid external-display test; the kernel's connector status is.
+--   * `Hyprland --verify-config` evaluates this file with no MonitorState and no event
+--     loop, and it DOES fire config.reloaded (but not hyprland.start). hl.get_monitors(),
+--     hl.get_monitor() and hl.timer() SEGFAULT it (exit 139) if reached. Keep them out of
+--     the top level and out of config.reloaded unless guarded by is_verify_mode().
+--   * Lid-switch events are lost if the lid moves while the machine is suspending or
+--     resuming, so no single event can be trusted — hence the resume hook + the poll.
+--
+-- So: the eDP-1 rule is DECLARED conditionally from real facts, and every event just calls
+-- ensure_display(), which reloads only when reality disagrees with the rule. A reload whose
+-- rules already match is a no-op modeset, which preserves the old guard against
+-- reconfiguring eDP-1 across S3 when it is the only display (i915 segfault, ~/CLAUDE.md).
+
+local INTERNAL = "eDP-1"
 
 hl.monitor({ output = "", mode = "preferred", position = "auto", scale = "auto" })
 hl.monitor({ output = "HDMI-A-1", mode = "5120x1440@60", position = "0x0", scale = 1 })
-
--- Laptop lid switch — disable the internal monitor when the lid closes AND an external
--- monitor is connected. The external-monitor guard avoids reconfiguring eDP-1 across S3
--- resume when it's the only display, which segfaulted Hyprland on Meteor Lake / i915
--- (see ~/CLAUDE.md hardware notes). The guard is preserved exactly.
---
--- NOTE: this used to shell out to `hyprctl keyword monitor`, which does NOT work under
--- the Lua config manager ("keyword can't work with non-legacy parsers"). Done natively
--- instead — no subprocess, no parsing of `hyprctl monitors` output.
-
-local function external_monitor_present()
-    return #hl.get_monitors() > 1
-end
-
-local function disable_internal_display()
-    if external_monitor_present() then
-        hl.monitor({ output = "eDP-1", disabled = true })
-    end
-end
-
-local function enable_internal_display()
-    hl.monitor({ output = "eDP-1", mode = "preferred", position = "auto", scale = "auto" })
-end
 
 local function lid_is_closed()
     local f = io.open("/proc/acpi/button/lid/LID0/state", "r")
@@ -98,8 +106,116 @@ local function lid_is_closed()
     return state:match("closed") ~= nil
 end
 
-hl.bind("switch:on:Lid Switch", disable_internal_display, { locked = true })
-hl.bind("switch:off:Lid Switch", enable_internal_display, { locked = true })
+-- Any DRM connector other than the panel that the kernel reports as "connected".
+-- Kernel facts, not Hyprland state: valid at startup and under --verify-config (see above),
+-- and it flips the instant a cable is (un)plugged.
+local function external_display_connected()
+    local p = io.popen("ls -d /sys/class/drm/card*-* 2>/dev/null")
+    if not p then return false end
+    local found = false
+    for path in p:lines() do
+        if not path:find("eDP", 1, true) then
+            local f = io.open(path .. "/status", "r")
+            if f then
+                local st = f:read("l")
+                f:close()
+                if st == "connected" then found = true end
+            end
+        end
+    end
+    p:close()
+    return found
+end
+
+local function internal_should_be_enabled()
+    return not (lid_is_closed() and external_display_connected())
+end
+
+-- Runtime only (never at top level -- see the verify-config note above).
+local function internal_is_enabled()
+    return hl.get_monitor(INTERNAL) ~= nil
+end
+
+if internal_should_be_enabled() then
+    hl.monitor({ output = INTERNAL, mode = "preferred", position = "auto", scale = "auto" })
+else
+    hl.monitor({ output = INTERNAL, disabled = true })
+end
+
+-- Globals on purpose: callable from outside the config with
+--   hyprctl repl 'return display_state()'   -- inspect
+--   hyprctl eval  'ensure_display()'        -- fix (hypridle's after_sleep_cmd does this)
+function display_state()
+    return string.format("lid=%s external_connected=%s internal_enabled=%s internal_should_be=%s",
+        lid_is_closed() and "closed" or "open",
+        tostring(external_display_connected()),
+        tostring(internal_is_enabled()),
+        tostring(internal_should_be_enabled()))
+end
+
+-- Reload throttle. Lua state is wiped on every reload, so the timestamp lives in a file;
+-- without it an unfixable mismatch (panel refuses to light) would reload in a tight loop.
+local THROTTLE_FILE = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/hypr-ensure-display.last"
+local RELOAD_MIN_INTERVAL_S = 10
+
+local function last_reload_time()
+    local f = io.open(THROTTLE_FILE, "r")
+    if not f then return 0 end
+    local t = tonumber(f:read("a")) or 0
+    f:close()
+    return t
+end
+
+local function mark_reload()
+    local f = io.open(THROTTLE_FILE, "w")
+    if f then f:write(tostring(os.time())); f:close() end
+end
+
+function ensure_display()
+    if internal_is_enabled() == internal_should_be_enabled() then
+        return "ok: " .. display_state()
+    end
+    if os.time() - last_reload_time() < RELOAD_MIN_INTERVAL_S then
+        return "mismatch, reload throttled: " .. display_state()
+    end
+    mark_reload()
+    hl.exec_cmd("hyprctl reload")
+    return "mismatch, reloading: " .. display_state()
+end
+
+-- Hotplug/lid events arrive in bursts and Hyprland's monitor list lags the event slightly;
+-- settle for a second before judging. Reload is convergent: once it fixes the state, the
+-- monitor.added/removed events it triggers see a match and do nothing.
+local function ensure_display_soon()
+    hl.timer(ensure_display, { timeout = 1000, type = "oneshot" })
+end
+
+hl.bind("switch:on:Lid Switch",  ensure_display_soon, { locked = true })
+hl.bind("switch:off:Lid Switch", ensure_display_soon, { locked = true })
+hl.on("monitor.added",   ensure_display_soon)
+hl.on("monitor.removed", ensure_display_soon)
+
+-- Belt and braces for lost events (lid moved during suspend, etc.). Cost per tick with the
+-- lid OPEN is one small file read: `lid_is_closed() and external_display_connected()`
+-- short-circuits, so the io.popen only runs while the lid is closed (when the machine is
+-- usually suspended or blanked anyway). Lua state is wiped on every reload, so
+-- the timer is (re)armed from hyprland.start AND config.reloaded; the global guards against
+-- double-arming within one load. config.reloaded also fires under `--verify-config`, where
+-- hl.timer() segfaults (no event loop), hence the explicit verify-mode check.
+local function is_verify_mode()
+    local f = io.open("/proc/self/cmdline", "r")
+    if not f then return false end
+    local cmd = f:read("a") or ""
+    f:close()
+    return cmd:find("--verify-config", 1, true) ~= nil
+end
+
+local function arm_display_poll()
+    if DISPLAY_POLL_TIMER or is_verify_mode() then return end
+    DISPLAY_POLL_TIMER = hl.timer(ensure_display, { timeout = 15000, type = "repeat" })
+end
+hl.on("hyprland.start",  arm_display_poll)
+hl.on("config.reloaded", arm_display_poll)
 
 
 ---------------------
@@ -129,19 +245,7 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("wl-paste --watch cliphist store")
     hl.exec_cmd("mako")
     hl.exec_cmd("hypridle")
-    hl.exec_cmd("hypr-monitor-reload") -- auto reload on monitor hotplug (fixes black internal screen after unplug)
 end)
-
--- `exec` (startup AND every reload) -> both events.
--- Re-assert the lid state, in case the lid was closed before this config loaded.
-local function sync_lid_state()
-    if lid_is_closed() then
-        disable_internal_display()
-    end
-end
-
-hl.on("hyprland.start", sync_lid_state)
-hl.on("config.reloaded", sync_lid_state)
 
 
 -------------------------------
@@ -366,7 +470,7 @@ hl.bind(mainMod .. " + SHIFT + B", hl.dsp.exec_cmd("chromium"))
 hl.bind(mainMod .. " + SHIFT + M", hl.dsp.exec_cmd(
     [[~/.local/bin/launch-or-focus 'Page Load Targets' 'chromium --app=https://grafana.taild0ac70.ts.net/d/tomes-page-load-targets/tomes-e28094-page-load-targets']]))
 hl.bind(mainMod .. " + SHIFT + T", hl.dsp.exec_cmd(
-    "pgrep -x btop && hyprctl dispatch focuswindow title:btop || " .. terminal .. " --title=btop -e btop"))
+    [[pgrep -x btop && hyprctl dispatch "hl.dsp.focus({ window = 'title:btop' })" || ]] .. terminal .. " --title=btop -e btop"))
 hl.bind(mainMod .. " + SHIFT + N", hl.dsp.exec_cmd(terminal .. " -e nvim"))
 hl.bind(mainMod .. " + SHIFT + D", hl.dsp.exec_cmd("discord --enable-features=UseOzonePlatform --ozone-platform=wayland"))
 hl.bind(mainMod .. " + SHIFT + L", hl.dsp.exec_cmd([[wl-paste | tr -d '\n' | wl-copy]]))
