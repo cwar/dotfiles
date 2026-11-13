@@ -6,7 +6,7 @@ WINDOW_ADDRESS=$(hyprctl clients -j | jq -r \
   '.[]|select(.title|test("^lazygit$"))|.address' | head -n1)
 
 if [[ -n $WINDOW_ADDRESS ]]; then
-  hyprctl dispatch focuswindow "address:$WINDOW_ADDRESS"
+  hyprctl dispatch "hl.dsp.focus({ window = 'address:$WINDOW_ADDRESS' })"
   exit 0
 fi
 

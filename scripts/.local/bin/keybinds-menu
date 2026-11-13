@@ -6,42 +6,42 @@ declare -A bindings=(
     ["Super + Return: Open terminal"]="ghostty"
     ["Super + W: Close window (recoverable)"]="~/.local/bin/hypr-undo-close close"
     ["Super + Z: Undo close window"]="~/.local/bin/hypr-undo-close pop"
-    ["Super + T: Toggle floating"]="hyprctl dispatch togglefloating"
-    ["Super + F: Fullscreen active window"]="hyprctl dispatch fullscreen 0"
-    ["Super + Shift + F: Maximize active window"]="hyprctl dispatch fullscreen 1"
-    ["Super + P: Toggle pseudo-tiling"]="hyprctl dispatch pseudo"
-    ["Super + J: Toggle split"]="hyprctl dispatch togglesplit"
+    ["Super + T: Toggle floating"]="hyprctl dispatch \"hl.dsp.window.float({ action = 'toggle' })\""
+    ["Super + F: Fullscreen active window"]="hyprctl dispatch \"hl.dsp.window.fullscreen({ mode = 'fullscreen' })\""
+    ["Super + Shift + F: Maximize active window"]="hyprctl dispatch \"hl.dsp.window.fullscreen({ mode = 'maximized' })\""
+    ["Super + P: Toggle pseudo-tiling"]="hyprctl dispatch \"hl.dsp.window.pseudo()\""
+    ["Super + J: Toggle split"]="hyprctl dispatch \"hl.dsp.layout('togglesplit')\""
 
     # Focus
     ["Super + Arrow: Move focus"]=""
-    ["Super + Left: Focus left"]="hyprctl dispatch movefocus l"
-    ["Super + Right: Focus right"]="hyprctl dispatch movefocus r"
-    ["Super + Up: Focus up"]="hyprctl dispatch movefocus u"
-    ["Super + Down: Focus down"]="hyprctl dispatch movefocus d"
+    ["Super + Left: Focus left"]="hyprctl dispatch \"hl.dsp.focus({ direction = 'l' })\""
+    ["Super + Right: Focus right"]="hyprctl dispatch \"hl.dsp.focus({ direction = 'r' })\""
+    ["Super + Up: Focus up"]="hyprctl dispatch \"hl.dsp.focus({ direction = 'u' })\""
+    ["Super + Down: Focus down"]="hyprctl dispatch \"hl.dsp.focus({ direction = 'd' })\""
 
     # Swap Windows
     ["Super + Shift + Arrow: Swap windows"]=""
-    ["Super + Shift + Left: Swap left"]="hyprctl dispatch swapwindow l"
-    ["Super + Shift + Right: Swap right"]="hyprctl dispatch swapwindow r"
-    ["Super + Shift + Up: Swap up"]="hyprctl dispatch swapwindow u"
-    ["Super + Shift + Down: Swap down"]="hyprctl dispatch swapwindow d"
+    ["Super + Shift + Left: Swap left"]="hyprctl dispatch \"hl.dsp.window.swap({ direction = 'l' })\""
+    ["Super + Shift + Right: Swap right"]="hyprctl dispatch \"hl.dsp.window.swap({ direction = 'r' })\""
+    ["Super + Shift + Up: Swap up"]="hyprctl dispatch \"hl.dsp.window.swap({ direction = 'u' })\""
+    ["Super + Shift + Down: Swap down"]="hyprctl dispatch \"hl.dsp.window.swap({ direction = 'd' })\""
 
     # Move to Monitor
-    ["Super + Ctrl + Left: Move to left monitor"]="hyprctl dispatch movewindow mon:l"
-    ["Super + Ctrl + Right: Move to right monitor"]="hyprctl dispatch movewindow mon:r"
+    ["Super + Ctrl + Left: Move to left monitor"]="hyprctl dispatch \"hl.dsp.window.move({ monitor = 'l' })\""
+    ["Super + Ctrl + Right: Move to right monitor"]="hyprctl dispatch \"hl.dsp.window.move({ monitor = 'r' })\""
 
     # Resize
     ["Super + Alt + Arrow: Resize window"]=""
-    ["Super + Alt + Left: Shrink width"]="hyprctl dispatch resizeactive -50 0"
-    ["Super + Alt + Right: Grow width"]="hyprctl dispatch resizeactive 50 0"
-    ["Super + Alt + Up: Shrink height"]="hyprctl dispatch resizeactive 0 -50"
-    ["Super + Alt + Down: Grow height"]="hyprctl dispatch resizeactive 0 50"
+    ["Super + Alt + Left: Shrink width"]="hyprctl dispatch \"hl.dsp.window.resize({ x = -50, y = 0 })\""
+    ["Super + Alt + Right: Grow width"]="hyprctl dispatch \"hl.dsp.window.resize({ x = 50, y = 0 })\""
+    ["Super + Alt + Up: Shrink height"]="hyprctl dispatch \"hl.dsp.window.resize({ x = 0, y = -50 })\""
+    ["Super + Alt + Down: Grow height"]="hyprctl dispatch \"hl.dsp.window.resize({ x = 0, y = 50 })\""
 
     # Workspaces
     ["Super + 1-0: Switch to workspace 1-10"]=""
     ["Super + Shift + 1-0: Move window to workspace"]=""
-    ["Super + S: Toggle scratchpad"]="hyprctl dispatch togglespecialworkspace magic"
-    ["Super + Shift + S: Move to scratchpad"]="hyprctl dispatch movetoworkspace special:magic"
+    ["Super + S: Toggle scratchpad"]="hyprctl dispatch \"hl.dsp.workspace.toggle_special('magic')\""
+    ["Super + Shift + S: Move to scratchpad"]="hyprctl dispatch \"hl.dsp.window.move({ workspace = 'special:magic' })\""
     ["Super + Scroll: Cycle workspaces"]=""
 
     # Applications
@@ -51,7 +51,7 @@ declare -A bindings=(
     ["Super + Shift + A: Claude AI"]="chromium --app=https://claude.ai"
     ["Super + Shift + B: Browser"]="chromium"
     ["Super + Shift + M: Tomes Metrics dashboard"]="~/.local/bin/launch-or-focus 'Page Load Targets' 'chromium --app=https://grafana.taild0ac70.ts.net/d/tomes-page-load-targets/tomes-e28094-page-load-targets'"
-    ["Super + Shift + T: System monitor (btop)"]="pgrep -x btop && hyprctl dispatch focuswindow title:btop || ghostty --title=btop -e btop"
+    ["Super + Shift + T: System monitor (btop)"]="pgrep -x btop && hyprctl dispatch \"hl.dsp.focus({ window = 'title:btop' })\" || ghostty --title=btop -e btop"
     ["Super + Shift + N: Neovim"]="ghostty -e nvim"
     ["Super + Shift + D: Discord"]="discord --enable-features=UseOzonePlatform --ozone-platform=wayland"
     ["Super + Shift + L: Clipboard to single line"]="wl-paste | tr -d '\n' | wl-copy"
@@ -111,7 +111,7 @@ declare -A bindings=(
     # System
     ["Super + L: Lock screen"]="hyprlock"
     ["Super + Escape: Power menu (shutdown/restart/lock/sleep)"]="~/.local/bin/power-menu"
-    ["Super + M: Exit Hyprland"]="hyprctl dispatch exit"
+    ["Super + M: Exit Hyprland"]="hyprctl dispatch \"hl.dsp.exit()\""
     ["Super + K: Show this menu"]=""
     ["Super + Shift + G: Lazygit (uses terminal cwd)"]="~/.local/bin/launch-lazygit"
     ["Super + Shift + I: Toggle monitor input (HDMI1/HDMI2)"]="~/.local/bin/samsung-input-toggle"
