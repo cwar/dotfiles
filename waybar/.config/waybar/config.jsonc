@@ -6,7 +6,7 @@
 
   "modules-left": ["ext/workspaces"],
   "modules-center": ["custom/sysupdate", "clock"],
-  "modules-right": ["disk", "disk#extra", "network", "wireplumber", "battery", "tray"],
+  "modules-right": ["disk", "disk#extra", "network", "wireplumber", "custom/dualsense", "battery", "tray"],
 
   // ext-workspace-v1 protocol instead of hyprland/workspaces: waybar's
   // hyprland module hardcodes the legacy IPC string "dispatch workspace N",
@@ -33,6 +33,12 @@
   "battery": {
     "format": "{capacity}%",
     "format-charging": "⚡ {capacity}%"
+  },
+
+  "custom/dualsense": {
+    "exec": "~/.local/bin/dualsense-battery",
+    "return-type": "json",
+    "interval": 30
   },
 
   "disk": {

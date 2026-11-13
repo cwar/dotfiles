@@ -6,7 +6,6 @@
 window#waybar {
   background: rgba(26, 27, 35, 0.95);
   color: #f8f8f2;
-  margin-left: 8px;
 }
 
 #workspaces button {
@@ -35,8 +34,20 @@ window#waybar {
   color: #f1fa8c;
 }
 
-#clock, #battery, #wireplumber, #tray, #network {
+#clock, #battery, #wireplumber, #tray, #network, #custom-dualsense {
   padding: 0 6px;
+}
+
+#custom-dualsense.charging {
+  color: #50fa7b;
+}
+
+#custom-dualsense.warning {
+  color: #f1fa8c;
+}
+
+#custom-dualsense.critical {
+  color: #ff5555;
 }
 
 #battery.charging {
