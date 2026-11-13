@@ -1,4 +1,4 @@
 [filechooser]
 cmd=/usr/share/xdg-desktop-portal-termfilechooser/yazi-wrapper.sh
 default_dir=$HOME
-env=TERMCMD=ghostty --title=yazi-filechooser -e
+env=TERMCMD=ghostty --class=yazi-selector --title=yazi-filechooser -e
