@@ -3,6 +3,8 @@ binds {
     Mod+Return hotkey-overlay-title="Terminal: ghostty" { spawn "ghostty"; }
     Mod+T { spawn "ghostty"; }
     Mod+Space hotkey-overlay-title="Launcher: fuzzel" { spawn "fuzzel"; }
+    // Replaces the KDE-only hotkey-menu (it reads KGlobalAccel, which lives inside KWin).
+    Mod+K hotkey-overlay-title="Show shortcuts" { show-hotkey-overlay; }
 
     Mod+Shift+T hotkey-overlay-title="btop" { spawn "/home/cwar/.local/bin/kde-term-run" "btop"; }
     Mod+Shift+G hotkey-overlay-title="lazygit" { spawn "/home/cwar/.local/bin/kde-term-run" "lazygit"; }
