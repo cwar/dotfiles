@@ -14,6 +14,22 @@ if [ -d "$HOME/.local/share/mise/shims" ]; then
   export PATH
 fi
 
+# The tmux server outlives desktop sessions, so its env can name a dead compositor;
+# the systemd user manager always holds the current session's values.
+sync_session_env() {
+  local line key
+  command -v systemctl >/dev/null 2>&1 || return 0
+  while IFS= read -r line; do
+    key=${line%%=*}
+    case $key in
+      WAYLAND_DISPLAY | DISPLAY | XDG_CURRENT_DESKTOP | XDG_SESSION_DESKTOP | NIRI_SOCKET)
+        export "$key=${line#*=}"
+        ;;
+    esac
+  done < <(systemctl --user show-environment 2>/dev/null)
+  [[ -S ${NIRI_SOCKET:-/nonexistent} ]] || unset NIRI_SOCKET
+}
+
 extract_urls() {
   local input_file status
 
@@ -325,10 +341,31 @@ focus_browser_window_kde() {
   return 1
 }
 
+# Focus a browser window on niri's focused workspace; fails if none is there.
+focus_browser_window_niri() {
+  local id
+  command -v niri >/dev/null 2>&1 || return 1
+  id=$(niri msg --json windows 2>/dev/null | python3 -c '
+import json, sys
+browsers = ("google-chrome", "chromium", "firefox", "org.mozilla.firefox", "brave-browser", "microsoft-edge", "vivaldi")
+wins = json.load(sys.stdin)
+focused_ws = next((w["workspace_id"] for w in wins if w["is_focused"]), None)
+for w in wins:
+    if w["workspace_id"] == focused_ws and (w["app_id"] or "").lower().startswith(browsers):
+        print(w["id"])
+        break
+' 2>/dev/null) || return 1
+  [[ -n $id ]] || return 1
+  niri msg action focus-window --id "$id" >/dev/null 2>&1
+}
+
 prepare_browser_window_for_open() {
   case ${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-} in
     *KDE*)
       focus_browser_window_kde false true
+      ;;
+    *niri*)
+      focus_browser_window_niri
       ;;
     *)
       return 1
@@ -344,6 +381,10 @@ focus_browser_window() {
       delay=${TMUX_URL_PICKER_FOCUS_DELAY:-0.35}
       sleep "$delay" 2>/dev/null || true
       focus_browser_window_kde true false || true
+      ;;
+    *niri*)
+      sleep "${TMUX_URL_PICKER_FOCUS_DELAY:-0.35}" 2>/dev/null || true
+      focus_browser_window_niri || true
       ;;
   esac
 }
@@ -630,6 +671,8 @@ if [[ "${1:-}" == "--self-test" ]]; then
   exit $?
 fi
 
+sync_session_env
+
 # Capture visible pane content + scrollback visible area. -J asks tmux to join
 # terminal-soft-wrapped lines; extract_urls also handles hard-wrapped URL text
 # emitted by TUIs.
@@ -651,8 +694,8 @@ SELECTED=$(echo "$URLS" | fzf-tmux -p 90%,60% \
   --reverse \
   --header="╸ $URL_COUNT URLs found ╺ enter=open │ ctrl-y=copy │ ctrl-a=copy all" \
   --prompt="🔗 " \
-  --bind="ctrl-y:execute-silent(echo {} | wl-copy)+abort" \
-  --bind="ctrl-a:execute-silent(echo '$URLS' | wl-copy)+abort" \
+  --bind="ctrl-y:execute-silent(echo {} | WAYLAND_DISPLAY=$WAYLAND_DISPLAY wl-copy)+abort" \
+  --bind="ctrl-a:execute-silent(echo '$URLS' | WAYLAND_DISPLAY=$WAYLAND_DISPLAY wl-copy)+abort" \
   --expect="enter,ctrl-y" \
   --color="bg:#0a0e14,fg:#d4ffda,header:#39ff14,prompt:#39ff14,pointer:#39ff14,hl:#5c7a65,hl+:#39ff14,info:#5c7a65" \
   2>/dev/null) || exit 0
