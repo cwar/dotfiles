@@ -1,0 +1,30 @@
+// Neutral Breeze Dark-aligned starting point; the real palette comes later.
+input {
+    touchpad {
+        tap
+        natural-scroll
+    }
+    focus-follows-mouse max-scroll-amount="0%"
+}
+
+layout {
+    gaps 10
+    background-color "#1b1e20"
+
+    focus-ring {
+        width 2
+        active-color "#3daee9"
+        inactive-color "#31363b"
+    }
+}
+
+prefer-no-csd
+
+window-rule {
+    geometry-corner-radius 8
+    clip-to-geometry true
+}
+
+hotkey-overlay {
+    skip-at-startup
+}

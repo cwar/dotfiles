@@ -19,9 +19,13 @@ compositor (ADR-001/004) were recurring sources of breakage.
 
 - Niri becomes the daily session on the Ubuntu laptop. Plasma stays installed as
   a stock Breeze Dark fallback with its own panel and notifications.
-- Session helpers (bar, notifications, wallpaper, idle) are started by the
-  session that owns them (niri `spawn-at-startup` or a niri-specific target),
-  never by bare `graphical-session.target`.
+- Session helpers (bar, notifications, wallpaper, idle) start only in the
+  session that owns them. Ubuntu enables the packaged waybar/mako units
+  globally, so per-user drop-ins (`ConditionEnvironment=!XDG_CURRENT_DESKTOP=KDE`)
+  gate them off Plasma; KDE-only units carry the inverse condition. niri-only
+  helpers (wallpaper, idle, polkit agent) use `spawn-at-startup`.
+- Stow the systemd package with `--no-folding`: systemd ignores drop-in
+  directories that are themselves symlinks.
 - Waybar configs are per compositor. The KDE waybar variant and the
   `~/.local/bin/waybar` wrapper are removed.
 - Distro-specific scripts sit behind a shared entry point (`sysupdate-check`

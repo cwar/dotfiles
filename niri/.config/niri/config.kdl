@@ -1,0 +1,7 @@
+// base.kdl is niri's upstream default-config.kdl (version in .base-version), minus its
+// `spawn-at-startup "waybar"`: waybar.service already starts with graphical-session.target.
+include "base.kdl"
+
+include "look.kdl"
+include "startup.kdl"
+include "binds.kdl"

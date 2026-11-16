@@ -1,4 +1,5 @@
 [Unit]
+ConditionEnvironment=XDG_CURRENT_DESKTOP=KDE
 Description=Ensure KDE screenshot shortcuts use the clipboard-first wrapper
 Documentation=man:gdbus(1)
 After=graphical-session.target plasma-clipboard-windowed.service

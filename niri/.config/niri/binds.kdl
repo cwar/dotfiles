@@ -1,0 +1,29 @@
+// Ports the KDE global shortcuts; overrides base.kdl where keys collide.
+binds {
+    Mod+Return hotkey-overlay-title="Terminal: ghostty" { spawn "ghostty"; }
+    Mod+T { spawn "ghostty"; }
+    Mod+Space hotkey-overlay-title="Launcher: fuzzel" { spawn "fuzzel"; }
+
+    Mod+Shift+T hotkey-overlay-title="btop" { spawn "/home/cwar/.local/bin/kde-term-run" "btop"; }
+    Mod+Shift+G hotkey-overlay-title="lazygit" { spawn "/home/cwar/.local/bin/kde-term-run" "lazygit"; }
+    Mod+Alt+V hotkey-overlay-title="VPN" { spawn "/home/cwar/.local/bin/kde-term-run" "vpn"; }
+    Mod+Ctrl+B hotkey-overlay-title="Bluetooth" { spawn "/home/cwar/.local/bin/kde-term-run" "bluetooth-tui"; }
+
+    Mod+Shift+B hotkey-overlay-title="Chrome: work" { spawn "google-chrome" "--profile-directory=Default"; }
+    Mod+Ctrl+Shift+B hotkey-overlay-title="Chrome: personal" { spawn "google-chrome" "--profile-directory=Profile 1"; }
+    Mod+Shift+E hotkey-overlay-title="Gmail" { spawn "google-chrome" "--app=https://mail.google.com" "--profile-directory=Default"; }
+    Mod+Shift+C hotkey-overlay-title="Calendar" { spawn "google-chrome" "--app=https://calendar.google.com" "--profile-directory=Default"; }
+    Mod+Shift+O hotkey-overlay-title="Obsidian" { spawn "/home/cwar/.local/bin/obsidian"; }
+    Mod+Shift+F hotkey-overlay-title="Files: dolphin" { spawn "dolphin"; }
+    Mod+Shift+M hotkey-overlay-title="Spotify" { spawn "spotify"; }
+
+    Mod+Shift+N hotkey-overlay-title="Dismiss notifications" { spawn "makoctl" "dismiss" "--all"; }
+
+    Print { screenshot; }
+    Ctrl+Print { screenshot-screen; }
+    Shift+Print { screenshot-window; }
+
+    // Displaced from base.kdl by the app keys above.
+    Mod+Alt+F { fullscreen-window; }
+    Mod+Ctrl+Shift+E { quit; }
+}

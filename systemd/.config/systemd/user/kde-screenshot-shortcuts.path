@@ -1,4 +1,5 @@
 [Unit]
+ConditionEnvironment=XDG_CURRENT_DESKTOP=KDE
 Description=Re-ensure KDE screenshot shortcuts when KGlobalAccel rewrites config
 Documentation=man:systemd.path(5)
 PartOf=graphical-session.target

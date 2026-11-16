@@ -1,0 +1,5 @@
+// waybar and mako are systemd units (gated off Plasma); only niri-owned helpers start here.
+// Don't spawn xwayland-satellite or set DISPLAY: niri >= 25.08 does both on demand.
+spawn-at-startup "/usr/lib/x86_64-linux-gnu/libexec/polkit-kde-authentication-agent-1"
+spawn-sh-at-startup "swaybg -m fill -i /usr/share/wallpapers/Next/contents/images/5120x2880.png"
+spawn-sh-at-startup "swayidle -w timeout 600 'swaylock -f -c 1b1e20' timeout 900 'niri msg action power-off-monitors' before-sleep 'swaylock -f -c 1b1e20'"
