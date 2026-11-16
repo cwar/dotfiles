@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Check for available updates across all managed package sources
+# Outputs JSON for waybar custom module
+set -uo pipefail
+
+CACHE_FILE="/tmp/sysupdate-check.json"
+LOCK_FILE="/tmp/sysupdate-check.lock"
+
+# Avoid concurrent runs
+exec 9>"$LOCK_FILE"
+flock -n 9 || { [[ -f "$CACHE_FILE" ]] && cat "$CACHE_FILE"; exit 0; }
+
+updates=()
+total=0
+
+# ── Arch packages (pacman + AUR via yay) ──
+if command -v yay &>/dev/null; then
+    count=$(yay -Qu 2>/dev/null | wc -l)
+    if (( count > 0 )); then
+        updates+=("$count arch")
+        total=$((total + count))
+    fi
+elif command -v checkupdates &>/dev/null; then
+    count=$(checkupdates 2>/dev/null | wc -l)
+    if (( count > 0 )); then
+        updates+=("$count pacman")
+        total=$((total + count))
+    fi
+fi
+
+# ── Flatpak ──
+if command -v flatpak &>/dev/null; then
+    count=$(flatpak remote-ls --updates 2>/dev/null | wc -l)
+    if (( count > 0 )); then
+        updates+=("$count flatpak")
+        total=$((total + count))
+    fi
+fi
+
+# ── npm global ──
+if command -v npm &>/dev/null; then
+    count=$(npm -g outdated --parseable 2>/dev/null | wc -l)
+    if (( count > 0 )); then
+        updates+=("$count npm")
+        total=$((total + count))
+    fi
+fi
+
+# ── pipx ──
+if command -v pipx &>/dev/null; then
+    # pipx doesn't have a clean "check" command, use pip list --outdated on each
+    count=$(pipx list --short 2>/dev/null | wc -l)
+    # pipx upgrade-all --dry-run doesn't exist, so we skip detailed check
+    # Just flag if pipx has packages (lightweight signal)
+    count=0  # disable pipx noise - too slow to check properly
+fi
+
+# ── Rust toolchain ──
+if command -v rustup &>/dev/null; then
+    if rustup check 2>/dev/null | grep -q "Update available"; then
+        updates+=("1 rust")
+        total=$((total + 1))
+    fi
+fi
+
+# Build tooltip
+if (( total > 0 )); then
+    tooltip="$total updates available"
+    for u in "${updates[@]}"; do
+        tooltip="$tooltip\\n• $u"
+    done
+    # JSON output for waybar
+    printf '{"text": "󰁪", "tooltip": "%s", "class": "has-updates", "alt": "updates"}\n' "$tooltip" | tee "$CACHE_FILE"
+else
+    printf '{"text": "", "tooltip": "System up to date", "class": "no-updates", "alt": "none"}\n' | tee "$CACHE_FILE"
+fi
+
+flock -u 9

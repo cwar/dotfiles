@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Launch sysupdate in a floating ghostty on the current workspace.
+#
+# NOTE (Hyprland >= 0.56): `hyprctl dispatch` now evaluates its arguments as
+# Lua, wrapping them in `return hl.dispatch(<args>)`. The old shell-style form
+#     hyprctl dispatch exec "[workspace $WS]" "ghostty ..."
+# is parsed as Lua and dies on the bare `[workspace N]` table-index syntax,
+# exiting 7 with no window and no visible error. Dispatchers must now be built
+# as objects: hl.dsp.exec_cmd("<rules> <command>").
+set -uo pipefail
+
+WS=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // empty')
+
+RULES=""
+[[ -n "$WS" ]] && RULES="[workspace $WS] "
+
+PAYLOAD="$HOME/.local/bin/sysupdate; echo; echo Press any key to close...; read -n1"
+
+# Quoting layers: shell "" -> Lua '' -> sh (Hyprland) -> bash -lc ""
+if ! out=$(hyprctl dispatch \
+    "hl.dsp.exec_cmd('${RULES}ghostty --title=sysupdate -e bash -lc \"$PAYLOAD\"')" 2>&1) \
+    || [[ "$out" != "ok" ]]; then
+    echo "sysupdate-launch: dispatch failed: $out" >&2
+    hyprctl notify -1 8000 "rgb(ff5555)" "sysupdate-launch failed: $out" >/dev/null 2>&1
+    exit 1
+fi
+
+# Refresh waybar module after window closes (background wait)
+(sleep 2 && pkill -RTMIN+8 waybar) &

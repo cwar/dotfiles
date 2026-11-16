@@ -83,11 +83,11 @@ source $ZSH/oh-my-zsh.sh
 # export LANG=en_US.UTF-8
 
 # Preferred editor for local and remote sessions
-# if [[ -n $SSH_CONNECTION ]]; then
-#   export EDITOR='vim'
-# else
-#   export EDITOR='nvim'
-# fi
+if [[ -n $SSH_CONNECTION ]]; then
+  export EDITOR='vim'
+else
+  export EDITOR='nvim'
+fi
 
 # Compilation flags
 # export ARCHFLAGS="-arch $(uname -m)"
@@ -109,7 +109,7 @@ export POWERLINE_NERD_FONTS=1
 # Try - dated experiment folders
 eval "$(ruby ~/.local/bin/try.rb init ~/tries)"
 
-. "$HOME/.local/bin/env"
+[ -f "$HOME/.local/bin/env" ] && . "$HOME/.local/bin/env"
 alias ga='git add'
 alias gc='git commit'
 alias gs='git status'
@@ -124,6 +124,10 @@ alias lg='lazygit'
 eval "$(starship init zsh)"
 fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
+
+# zoxide (smarter cd — `z <partial>` jumps to frecent dirs)
+export _ZO_DOCTOR=0
+eval "$(zoxide init zsh --cmd cd)"
 
 # Claude wrapper - sets tmux window name while claude runs
 # Claude insights greeting (shows occasional insight on shell open)
@@ -161,3 +165,7 @@ claude() {
     command claude "$@"
   fi
 }
+
+# Added by flyctl installer
+export FLYCTL_INSTALL="/home/cwar/.fly"
+export PATH="$FLYCTL_INSTALL/bin:$PATH"

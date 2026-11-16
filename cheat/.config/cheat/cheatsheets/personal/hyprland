@@ -11,15 +11,39 @@ hyprctl layers                      List layers
 hyprctl version                     Show version
 hyprctl -j <cmd>                    JSON output
 
-# hyprctl - dispatchers
-hyprctl dispatch exec <cmd>              Run command
-hyprctl dispatch killactive              Close focused window
-hyprctl dispatch workspace <n>           Switch to workspace
-hyprctl dispatch movetoworkspace <n>     Move window to workspace
-hyprctl dispatch togglefloating          Toggle floating
-hyprctl dispatch fullscreen <0|1|2>      Toggle fullscreen (0=full, 1=max, 2=fake)
-hyprctl dispatch focuswindow <selector>  Focus window by class/title/pid
-hyprctl dispatch movewindow <dir>        Move window (l/r/u/d)
+# hyprctl - dispatchers  (Hyprland >= 0.56: args are LUA, not a shell string)
+# Old `hyprctl dispatch exec [workspace 2] foo` now FAILS with exit 7 and no error
+# popup -- the bare [workspace 2] parses as a Lua table index. Build a dispatcher:
+hyprctl dispatch "hl.dsp.exec_cmd('<cmd>')"                       Run command
+hyprctl dispatch "hl.dsp.exec_cmd('[workspace 2] <cmd>')"         Run w/ window rules
+hyprctl dispatch "hl.dsp.window.close()"                          Close focused window
+hyprctl dispatch "hl.dsp.window.close({ window = '<sel>' })"      Close specific window
+hyprctl dispatch "hl.dsp.focus({ workspace = <n> })"              Switch to workspace
+hyprctl dispatch "hl.dsp.focus({ window = '<sel>' })"             Focus window by selector
+hyprctl dispatch "hl.dsp.focus({ monitor = '<name|l|r>' })"       Focus monitor
+hyprctl dispatch "hl.dsp.focus({ direction = 'l' })"              Move focus (l/r/u/d)
+hyprctl dispatch "hl.dsp.window.move({ workspace = <n> })"        Move window to workspace
+hyprctl dispatch "hl.dsp.window.move({ workspace = <n>, silent = true })"   ...silently
+hyprctl dispatch "hl.dsp.window.move({ monitor = 'l' })"          Move window to monitor
+hyprctl dispatch "hl.dsp.window.swap({ direction = 'l' })"        Swap window
+hyprctl dispatch "hl.dsp.window.resize({ x = 50, y = 0 })"        Resize active
+hyprctl dispatch "hl.dsp.window.float({ action = 'toggle' })"     Toggle floating
+hyprctl dispatch "hl.dsp.window.fullscreen({ mode = 'fullscreen' })"   Fullscreen
+hyprctl dispatch "hl.dsp.window.fullscreen({ mode = 'maximized' })"    Maximize
+hyprctl dispatch "hl.dsp.window.pseudo()"                         Toggle pseudo-tile
+hyprctl dispatch "hl.dsp.layout('togglesplit')"                   Toggle split (dwindle)
+hyprctl dispatch "hl.dsp.workspace.toggle_special('magic')"       Toggle scratchpad
+hyprctl dispatch "hl.dsp.dpms({ action = 'off' })"                Screen off  (see GOTCHA)
+hyprctl dispatch "hl.dsp.exit()"                                  Exit Hyprland
+
+# GOTCHA: hl.dsp.dpms('off') is accepted, returns ok, and silently TOGGLES.
+# Only the table form { action = 'on'|'off' } actually SETS the state.
+# Same trap elsewhere: unknown keys are often ignored rather than rejected, so
+# "returns ok" only proves it parsed -- always verify the effect.
+
+# Discovering the API (hyprctl eval swallows return values -- leak via error()):
+hyprctl eval 'local t={} for k,_ in pairs(hl.dsp) do t[#t+1]=k end error(table.concat(t,","))'
+/usr/share/hypr/stubs/hl.meta.lua        Full LuaLS type stubs for the hl API
 
 # hyprctl - live config changes
 hyprctl keyword general:gaps_out 20
@@ -28,7 +52,7 @@ hyprctl keyword decoration:rounding 10
 hyprctl reload                           Reload config
 
 # hyprctl - batch commands
-hyprctl --batch "dispatch workspace 1; dispatch exec ghostty"
+hyprctl --batch "dispatch hl.dsp.focus({ workspace = 1 }); dispatch hl.dsp.exec_cmd('ghostty')"
 
 # Window selectors (for focuswindow, etc)
 class:<regex>        Match window class
@@ -36,11 +60,14 @@ title:<regex>        Match window title
 pid:<pid>            Match process ID
 address:<addr>       Match window address
 
-# Window rules syntax (in config)
-windowrule = <rule>,<selector>
-windowrule = float,class:^(pavucontrol)$
-windowrule = size 80% 80%,title:^(btop)$
-windowrule = workspace 2,class:^(firefox)$
+# Window rules syntax -- LUA config (~/.config/hypr/hyprland.lua is what loads here)
+hl.window_rule({
+    name  = "btop-popup",
+    match = { title = "^(btop)$" },
+    float = true, size = pct(0.8, 0.8), center = true,
+})
+# legacy hyprland.conf form (NOT loaded while hyprland.lua exists):
+# windowrule = match:title ^(btop)$, float on
 
 # Common rules
 float               Make floating
@@ -53,10 +80,11 @@ opacity <f> <f>     Active/inactive opacity
 noblur              Disable blur
 pin                 Pin (show on all workspaces)
 
-# Bind syntax (in config)
-bind = MODS, key, dispatcher, args
-bind = SUPER, Return, exec, ghostty
-bind = SUPER SHIFT, Q, killactive
-bindm = SUPER, mouse:272, movewindow     # mouse bind
-binde = SUPER, Right, resizeactive, 50 0  # repeat on hold
-bindl = , XF86AudioMute, exec, ...        # works when locked
+# Bind syntax -- LUA config
+hl.bind("SUPER + Return", hl.dsp.exec_cmd("ghostty"))
+hl.bind("SUPER + SHIFT + Q", hl.dsp.window.close())
+hl.bind("SUPER + mouse:272", hl.dsp.window.drag(), MOUSE)
+hl.bind("SUPER + right", hl.dsp.window.resize({ x = 50, y = 0 }), REPEAT)
+hl.bind("XF86AudioMute", hl.dsp.exec_cmd("..."), LOCKED)   # works when locked
+# NOTE: config-level binds were never affected by the Lua switch -- only shell
+# calls to `hyprctl dispatch` broke.

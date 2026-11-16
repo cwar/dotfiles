@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# System update script - updates all package managers
+set -euo pipefail
+
+BOLD='\033[1m'
+GREEN='\033[1;32m'
+BLUE='\033[1;34m'
+YELLOW='\033[1;33m'
+RED='\033[1;31m'
+RESET='\033[0m'
+
+section() {
+    echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "${BOLD}  $1${RESET}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
+}
+
+ok()   { echo -e "  ${GREEN}✓${RESET} $1"; }
+skip() { echo -e "  ${YELLOW}⊘${RESET} $1 (skipped)"; }
+fail() { echo -e "  ${RED}✗${RESET} $1"; }
+
+ERRORS=()
+
+run_step() {
+    local name="$1"; shift
+    if "$@"; then
+        ok "$name"
+    else
+        fail "$name"
+        ERRORS+=("$name")
+    fi
+}
+
+echo -e "\n${GREEN}${BOLD}  ⟳  System Update  ⟳${RESET}"
+echo -e "  $(date '+%A, %B %d %Y at %I:%M %p')\n"
+
+# ── Arch packages (pacman + AUR via yay) ──
+section "📦 Arch Packages (pacman + AUR)"
+_snap_before=$(mktemp)
+_snap_after=$(mktemp)
+_upgrade_log=$(mktemp)
+trap 'rm -f "$_snap_before" "$_snap_after" "$_upgrade_log"' EXIT
+pacman -Q > "$_snap_before" 2>/dev/null || true
+
+run_step "yay -Syu" yay -Syu --noconfirm --needed
+
+pacman -Q > "$_snap_after" 2>/dev/null || true
+while IFS=' ' read -r pkg new_ver; do
+    old_ver=$(grep "^${pkg} " "$_snap_before" | awk '{print $2}' || true)
+    [[ -n "$old_ver" && "$old_ver" != "$new_ver" ]] && printf '%s %s %s\n' "$pkg" "$old_ver" "$new_ver"
+done < "$_snap_after" > "$_upgrade_log" || true
+[[ -s "$_upgrade_log" ]] && ~/.local/bin/sysupdate-breaking-check "$_upgrade_log" || true
+
+# ── Flatpak ──
+if command -v flatpak &>/dev/null; then
+    section "📦 Flatpak"
+    run_step "flatpak update" flatpak update -y
+else
+    skip "Flatpak not installed"
+fi
+
+# ── npm global packages ──
+if command -v npm &>/dev/null; then
+    section "📦 npm Global Packages"
+    outdated=$(npm -g outdated --parseable 2>/dev/null || true)
+    if [[ -n "$outdated" ]]; then
+        echo "$outdated" | while IFS=: read -r path current wanted latest _; do
+            pkg=$(basename "$path")
+            echo -e "  ${YELLOW}↑${RESET} $pkg: $current → $latest"
+        done
+        run_step "npm global update" npm update -g
+    else
+        ok "All npm global packages up to date"
+    fi
+fi
+
+# ── pipx ──
+if command -v pipx &>/dev/null; then
+    section "📦 pipx Packages"
+    run_step "pipx upgrade-all" pipx upgrade-all
+fi
+
+# ── Rust toolchain ──
+if command -v rustup &>/dev/null; then
+    section "🦀 Rust Toolchain"
+    run_step "rustup update" rustup update
+fi
+
+# ── Summary ──
+echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+if [[ ${#ERRORS[@]} -eq 0 ]]; then
+    echo -e "${GREEN}${BOLD}  ✓ All updates complete!${RESET}"
+else
+    echo -e "${RED}${BOLD}  ✗ Completed with errors:${RESET}"
+    for e in "${ERRORS[@]}"; do
+        echo -e "    ${RED}• $e${RESET}"
+    done
+fi
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
+
+exit ${#ERRORS[@]}

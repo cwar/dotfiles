@@ -1,1 +1,83 @@
-config-hypr.jsonc
+{
+  "layer": "top",
+  "position": "top",
+  "height": 30,
+  "spacing": 4,
+
+  "modules-left": ["ext/workspaces"],
+  "modules-center": ["custom/sysupdate", "clock"],
+  "modules-right": ["disk", "disk#extra", "network", "wireplumber", "custom/dualsense", "battery", "tray"],
+
+  // ext-workspace-v1 protocol instead of hyprland/workspaces: waybar's
+  // hyprland module hardcodes the legacy IPC string "dispatch workspace N",
+  // which Hyprland >=0.56 with a Lua config evaluates as Lua and rejects.
+  // "on-click": "activate" uses the Wayland protocol request instead.
+  "ext/workspaces": {
+    "format": "{name}",
+    "on-click": "activate",
+    "sort-by-name": true
+  },
+
+  "custom/sysupdate": {
+    "exec": "~/.local/bin/sysupdate-check",
+    "return-type": "json",
+    "interval": 3600,
+    "on-click": "~/.local/bin/sysupdate-launch",
+    "signal": 8
+  },
+
+  "clock": {
+    "format": "{:%a %b %d  %I:%M %p}"
+  },
+
+  "battery": {
+    "format": "{capacity}%",
+    "format-charging": "⚡ {capacity}%"
+  },
+
+  "custom/dualsense": {
+    "exec": "~/.local/bin/dualsense-battery",
+    "return-type": "json",
+    "interval": 30
+  },
+
+  "disk": {
+    "path": "/",
+    "format": "󰋊 / {percentage_used}%",
+    "tooltip-format": "Root: {used} / {total}",
+    "interval": 30,
+    "states": {
+      "warning": 75,
+      "critical": 90
+    }
+  },
+
+  "disk#extra": {
+    "path": "/mnt/extradrive1",
+    "format": "󰋊 ex {percentage_used}%",
+    "tooltip-format": "Extra: {used} / {total}",
+    "interval": 30,
+    "states": {
+      "warning": 75,
+      "critical": 90
+    }
+  },
+
+  "wireplumber": {
+    "format": "🔊 {volume}%",
+    "format-muted": "🔇",
+    "on-click": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+  },
+
+  "tray": {
+    "spacing": 10
+  },
+
+  "network": {
+    "format-wifi": "📶",
+    "format-ethernet": "🌐 {ipaddr}",
+    "format-disconnected": "❌ Offline",
+    "tooltip-format": "{ifname}: {ipaddr}",
+    "on-click": "ghostty -e nmtui"
+  }
+}

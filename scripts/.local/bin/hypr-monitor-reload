@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Auto-reload Hyprland on monitor hotplug so the internal panel never gets stuck off.
+
+Background: when an external display is connected, Hyprland disables the laptop
+panel (eDP-1) in its live runtime state. Unplugging the external does NOT clear
+that disabled flag, leaving a black internal screen. A `hyprctl reload` rebuilds
+monitor state from config (the catch-all `monitor=,preferred,auto,auto` rule),
+which re-enables eDP-1.
+
+This listens on Hyprland's event socket (.socket2.sock) and runs `hyprctl reload`
+whenever a monitor is added or removed. Started via exec-once in hyprland.conf.
+"""
+import os
+import socket
+import subprocess
+import sys
+import time
+
+RELEVANT = ("monitorremoved", "monitoradded", "monitoraddedv2")
+DEBOUNCE_S = 1.5  # hotplug emits a burst of events; coalesce into one reload
+
+
+def instance_sig():
+    s = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    if s:
+        return s
+    base = f"/run/user/{os.getuid()}/hypr"
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return None
+    return entries[0] if entries else None
+
+
+def socket_path():
+    s = instance_sig()
+    if not s:
+        return None
+    return f"/run/user/{os.getuid()}/hypr/{s}/.socket2.sock"
+
+
+def listen_once():
+    path = socket_path()
+    if not path:
+        return
+    # wait for the socket to appear (e.g. right after login)
+    for _ in range(100):
+        if os.path.exists(path):
+            break
+        time.sleep(0.3)
+    else:
+        return
+
+    last_reload = 0.0
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.connect(path)
+        buf = b""
+        while True:
+            data = sock.recv(4096)
+            if not data:
+                return  # socket closed -> let outer loop reconnect
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                event = line.decode(errors="replace")
+                name = event.split(">>", 1)[0]
+                if name in RELEVANT:
+                    now = time.monotonic()
+                    if now - last_reload >= DEBOUNCE_S:
+                        last_reload = now
+                        subprocess.run(["hyprctl", "reload"], check=False)
+
+
+def main():
+    while True:
+        try:
+            listen_once()
+        except (ConnectionError, OSError):
+            pass
+        time.sleep(2)  # brief backoff before reconnecting
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

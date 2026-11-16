@@ -4,7 +4,7 @@ Date: 2026-06-26
 
 ## Status
 
-Accepted
+Superseded by [006](006-niri-primary-session-scoped-helpers.md)
 
 ## Context
 

@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""
+remember / recall — a personal `history` for facts, notes, and terminal output.
+
+  remember "added option x=y for graphical compat"   save a free-text note
+  remember                                            capture the whole tmux pane buffer
+  remember -l 10                                      capture the last 10 lines of the pane
+  remember -l 10 -m "nvidia crash"                    capture + label inline (no prompt)
+  remember -e                                          compose a multi-line note in $EDITOR
+  some-cmd | remember                                 capture piped stdin
+
+Buffer/pipe captures prompt "why remember this?" for a label (Enter = none);
+pass -m TEXT to set the label inline and skip the prompt.
+
+  recall                                              list all entries (newest first)
+  recall graphic                                      list entries matching "graphic"
+  recall 3                                             print entry #3 in full
+  recall -f [query]                                   print full bodies of all (matching) entries
+  recall -i                                           fzf browser (enter=copy, ctrl-d=delete, ctrl-e=edit)
+
+  remember --rm 3 5                                   delete entries by index
+  remember --relabel 3 "better label"                 edit a label (omit text to be prompted)
+
+Also reachable as `remember --recall [query]`. recall accepts the same flags.
+
+Storage: append-only JSONL at ~/.local/share/remember/log.jsonl
+Each line: {"ts": epoch, "type": note|buffer|pipe, "host": ..., "cwd": ..., "body": ...}
+"""
+import json
+import os
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+LOG = os.path.expanduser("~/.local/share/remember/log.jsonl")
+
+
+# ----------------------------------------------------------------------------- helpers
+def die(msg, code=1):
+    print(f"remember: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def now():
+    return time.time()
+
+
+def short_cwd(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path.startswith(home) else path
+
+
+_SEP_CHARS = set("─━-=_*#~.•· ")
+
+
+def first_meaningful(body):
+    """First non-blank, non-separator line — a better headline than line 1."""
+    for line in body.split("\n"):
+        s = line.strip()
+        if s and not all(c in _SEP_CHARS for c in s):
+            return s
+    return body.split("\n", 1)[0] if body else ""
+
+
+def headline(e):
+    """What to show as an entry's one-line summary: label wins, else body."""
+    return e.get("label") or first_meaningful(e.get("body", ""))
+
+
+def prompt_tty(message):
+    """Prompt on the controlling terminal. Reads /dev/tty so it works even when
+    stdin is piped data. Two separate handles because a single r+ text stream
+    can't switch write->read on a non-seekable tty (io.UnsupportedOperation).
+    Returns the stripped input, or None on empty / no terminal."""
+    try:
+        with open("/dev/tty", "w") as w, open("/dev/tty", "r") as r:
+            w.write(message)
+            w.flush()
+            line = r.readline()
+    except (OSError, KeyboardInterrupt):
+        return None
+    return (line or "").strip() or None
+
+
+def prompt_label():
+    return prompt_tty("why remember this? (empty = no label): ")
+
+
+def reltime(ts):
+    d = now() - ts
+    if d < 60:
+        return f"{int(d)}s ago"
+    if d < 3600:
+        return f"{int(d // 60)}m ago"
+    if d < 86400:
+        return f"{int(d // 3600)}h ago"
+    if d < 86400 * 7:
+        return f"{int(d // 86400)}d ago"
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
+def load():
+    if not os.path.exists(LOG):
+        return []
+    out = []
+    with open(LOG) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def append(entry):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def save_all(entries):
+    """Rewrite the whole log atomically (for delete / relabel)."""
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    tmp = LOG + ".tmp"
+    with open(tmp, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e, ensure_ascii=False) + "\n")
+    os.replace(tmp, LOG)
+
+
+def capture_pane(tail=None):
+    if "TMUX" not in os.environ:
+        die("not inside tmux — terminal-buffer capture needs tmux. "
+            "Pass text to save a note, or pipe output in.")
+    start = f"-{tail}" if tail else "-"  # -N = last N lines, - = full scrollback
+    try:
+        out = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-J", "-S", start],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except subprocess.CalledProcessError as e:
+        die(f"tmux capture-pane failed: {e.stderr.strip()}")
+    # Drop the trailing blank lines and the line where `remember` itself was typed.
+    lines = out.rstrip("\n").split("\n")
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    return "\n".join(lines)
+
+
+def edit_in_editor(initial=""):
+    """Open $VISUAL/$EDITOR (fallback nano/vi) on a temp file; return its text."""
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") \
+        or ("nano" if shutil.which("nano") else "vi")
+    fd, path = tempfile.mkstemp(prefix="remember-", suffix=".md")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(initial)
+        try:
+            subprocess.run(shlex.split(editor) + [path], check=True)
+        except FileNotFoundError:
+            die(f"editor not found: {editor!r} (set $EDITOR)")
+        except subprocess.CalledProcessError as e:
+            die(f"editor exited with status {e.returncode}")
+        with open(path) as f:
+            return f.read()
+    finally:
+        os.unlink(path)
+
+
+# ----------------------------------------------------------------------------- recall
+def fmt_oneline(idx, e):
+    body = e.get("body", "")
+    nlines = body.count("\n") + 1 if body else 0
+    suffix = f"  (+{nlines - 1} lines)" if nlines > 1 else ""
+    icons = {"note": "✎", "buffer": "▤", "pipe": "⮑"}
+    icon = icons.get(e.get("type"), "•")
+    when = reltime(e.get("ts", 0))
+    cwd = short_cwd(e.get("cwd", ""))
+    return f"{idx:>3}  {icon} {when:>9}  {cwd}\n     {headline(e)}{suffix}"
+
+
+def fmt_full(idx, e):
+    icon = {"note": "✎", "buffer": "▤", "pipe": "⮑"}.get(e.get("type"), "•")
+    head = f"─── #{idx}  {icon} {e.get('type', '?')}  {reltime(e.get('ts', 0))}  {short_cwd(e.get('cwd', ''))}"
+    if e.get("label"):
+        head += f"  «{e['label']}»"
+    return f"{head} ───\n{e.get('body', '')}"
+
+
+def entry_text(e):
+    """Searchable text for an entry: label + body, lowercased."""
+    return ((e.get("label") or "") + " " + e.get("body", "")).lower()
+
+
+def filtered(query):
+    """All entries as (orig_index, entry), newest first, matching query."""
+    q = (query or "").lower()
+    indexed = list(enumerate(load()))
+    indexed.reverse()
+    if q:
+        indexed = [(i, e) for (i, e) in indexed if q in entry_text(e)]
+    return indexed
+
+
+def recall(args):
+    interactive = False
+    full = False
+    query_parts = []
+    for a in args:
+        if a in ("-i", "--interactive"):
+            interactive = True
+        elif a in ("-f", "--full"):
+            full = True
+        else:
+            query_parts.append(a)
+    query = " ".join(query_parts)
+
+    if interactive:
+        return recall_fzf(query)
+
+    # `recall N` -> print just that entry in full
+    if len(query_parts) == 1 and query_parts[0].lstrip("-").isdigit():
+        entries = load()
+        i = int(query_parts[0])
+        if 0 <= i < len(entries):
+            print(fmt_full(i, entries[i]))
+            return
+        die(f"no entry #{i} (have 0..{len(entries) - 1})")
+
+    indexed = filtered(query)
+    if not indexed:
+        print("recall: nothing remembered yet" if not query
+              else f"recall: no entries matching {query!r}")
+        return
+    for i, e in indexed:
+        if full:
+            print(fmt_full(i, e) + "\n")
+        else:
+            print(fmt_oneline(i, e))
+
+
+def fzf_line(i, e):
+    icon = {"note": "✎", "buffer": "▤", "pipe": "⮑"}.get(e.get("type"), "•")
+    return (f"{i}\t{icon} {reltime(e.get('ts', 0)):>9}  "
+            f"{short_cwd(e.get('cwd', ''))}: {headline(e)}")
+
+
+def fzf_lines(query):
+    """Tab-delimited fzf rows (re-read fresh so reload reflects deletes/edits)."""
+    print("\n".join(fzf_line(i, e) for i, e in filtered(query)))
+
+
+def recall_fzf(query):
+    qs = shlex.quote(os.path.realpath(__file__))
+    rows = [fzf_line(i, e) for i, e in filtered(query)]
+    if not rows:
+        print("recall: nothing remembered yet" if not query
+              else f"recall: no entries matching {query!r}")
+        return
+    reload = f"reload({qs} --fzf-lines {shlex.quote(query)})"
+    proc = subprocess.run(
+        ["fzf", "--delimiter=\t", "--with-nth=2..",
+         "--preview", f"{qs} --show {{1}}",
+         "--preview-window=right:60%:wrap",
+         "--prompt=recall> ", "--height=90%", "--border",
+         "--header=enter: copy   ctrl-d: delete   ctrl-e: edit label",
+         "--bind", f"ctrl-d:execute-silent({qs} --rm {{1}})+{reload}",
+         "--bind", f"ctrl-e:execute({qs} --relabel {{1}})+{reload}"],
+        input="\n".join(rows), text=True, capture_output=True,
+    )
+    sel = proc.stdout.strip()
+    if not sel:
+        return
+    idx = sel.split("\t", 1)[0]
+    body = load()[int(idx)].get("body", "")
+    try:
+        subprocess.run(["wl-copy", "-t", "text/plain"], input=body, text=True, check=True)
+        print(f"copied entry {idx} to clipboard ({body.count(chr(10)) + 1} lines)")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print(body)
+
+
+def delete(args):
+    nums = sorted({int(a) for a in args if a.lstrip("-").isdigit()})
+    if not nums:
+        die("--rm needs index numbers, e.g. remember --rm 3 5")
+    entries = load()
+    removed = [(i, entries[i]) for i in nums if 0 <= i < len(entries)]
+    if not removed:
+        die(f"no entries to delete (have 0..{len(entries) - 1})")
+    drop = {i for i, _ in removed}
+    save_all([e for i, e in enumerate(entries) if i not in drop])
+    for i, e in removed:
+        print(f"deleted #{i}: {headline(e)}")
+
+
+def relabel(args):
+    if not args or not args[0].lstrip("-").isdigit():
+        die("--relabel needs an index, e.g. remember --relabel 3 'new label'")
+    i = int(args[0])
+    entries = load()
+    if not (0 <= i < len(entries)):
+        die(f"no entry #{i} (have 0..{len(entries) - 1})")
+    if len(args) > 1:                       # label given inline
+        new = " ".join(args[1:]).strip()
+    else:                                    # prompt, showing current value
+        cur = entries[i].get("label")
+        new = prompt_tty(f"new label"
+                         + (f' [current: "{cur}"]' if cur else "")
+                         + " (empty = keep): ")
+        if new is None:
+            print("relabel: unchanged")
+            return
+    entries[i]["label"] = new or None
+    save_all(entries)
+    print(f"#{i} relabeled: {new or '(cleared)'}")
+
+
+def show(idx):
+    """Print one entry's full body (used by the fzf preview)."""
+    entries = load()
+    try:
+        e = entries[int(idx)]
+    except (ValueError, IndexError):
+        return
+    if e.get("label"):
+        print(f"# {e['label']}\n")
+    print(e.get("body", ""))
+
+
+# ----------------------------------------------------------------------------- remember
+def remember(args):
+    tail = None
+    label = None
+    use_editor = False
+    rest = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-e", "--editor"):
+            use_editor = True
+        elif a in ("-l", "--last"):
+            i += 1
+            if i >= len(args) or not args[i].lstrip("-").isdigit():
+                die("-l needs a number, e.g. remember -l 10")
+            tail = int(args[i])
+        elif a.startswith("-l") and a[2:].isdigit():  # -l10
+            tail = int(a[2:])
+        elif a in ("-m", "--message"):
+            i += 1
+            if i >= len(args):
+                die("-m needs text, e.g. remember -l 10 -m 'nvidia crash'")
+            label = args[i]
+        elif a.startswith("-m") and len(a) > 2:  # -m"text"
+            label = a[2:]
+        else:
+            rest.append(a)
+        i += 1
+
+    if use_editor:
+        body, etype = edit_in_editor(" ".join(rest)).rstrip("\n"), "note"
+    elif tail is not None:
+        body, etype = capture_pane(tail=tail), "buffer"
+    elif rest:
+        body, etype = " ".join(rest), "note"
+    elif not sys.stdin.isatty():
+        body, etype = sys.stdin.read().rstrip("\n"), "pipe"
+    else:
+        body, etype = capture_pane(), "buffer"
+
+    if not body.strip():
+        die("nothing to remember (empty body)")
+
+    # Buffer/pipe captures have no inherent context — ask why, unless -m given.
+    if label is None and etype in ("buffer", "pipe"):
+        label = prompt_label()
+
+    append({
+        "ts": now(),
+        "type": etype,
+        "host": socket.gethostname(),
+        "cwd": os.getcwd(),
+        "label": label,
+        "body": body,
+    })
+    n = body.count("\n") + 1
+    kind = {"note": "note", "buffer": f"buffer ({n} lines)",
+            "pipe": f"piped output ({n} lines)"}[etype]
+    tag = f" as “{label}”" if label else ""
+    print(f"remembered {kind}{tag}")
+
+
+# ----------------------------------------------------------------------------- dispatch
+def main():
+    argv = sys.argv[1:]
+    invoked = os.path.basename(sys.argv[0])
+
+    if argv:
+        cmd = argv[0]
+        if cmd == "--show":
+            return show(argv[1] if len(argv) > 1 else "")
+        if cmd == "--fzf-lines":
+            return fzf_lines(" ".join(argv[1:]))
+        if cmd == "--rm":
+            return delete(argv[1:])
+        if cmd == "--relabel":
+            return relabel(argv[1:])
+        if cmd in ("-h", "--help"):
+            print(__doc__.strip())
+            return
+
+    if invoked == "recall" or (argv and argv[0] in ("--recall", "-r")):
+        return recall([a for a in argv if a not in ("--recall", "-r")])
+
+    return remember(argv)
+
+
+if __name__ == "__main__":
+    main()

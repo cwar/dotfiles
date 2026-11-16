@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+"""
+claude-projects — discover local projects and launch Claude Code in one.
+
+Scans a handful of known locations for git repos, experiments, pi extensions,
+claude skills, MCP servers, and directories the user has previously opened
+Claude Code in. Shows them in an fzf picker with a rich preview pane, and on
+selection execs `claude` in the chosen directory.
+
+Usage:
+  claude-projects              # interactive picker → exec claude in selection
+  claude-projects --print      # pick and print path, don't exec claude
+  claude-projects --preview P  # internal: render preview pane for path P
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+HOME = Path.home()
+CLAUDE_PROJECTS = HOME / ".claude" / "projects"
+CLAUDE_SKILLS = HOME / ".claude" / "skills"
+PI_EXTENSIONS = HOME / ".pi" / "agent" / "extensions"
+MCP_SERVERS = HOME / "mcp-servers"
+TRIES = HOME / "tries"
+
+STANDALONE_REPOS = [HOME / "dotfiles", HOME / "tomes", HOME / "mnt" / "k8s"]
+
+CATEGORY_COLOR = {
+    "repo":       "\033[38;5;75m",   # blue
+    "experiment": "\033[38;5;222m",  # yellow
+    "extension":  "\033[38;5;213m",  # pink
+    "skill":      "\033[38;5;114m",  # green
+    "mcp":        "\033[38;5;180m",  # tan
+    "history":    "\033[38;5;246m",  # gray
+}
+RESET = "\033[0m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+
+
+# ── Types ────────────────────────────────────────────────────────────
+
+@dataclass
+class Project:
+    name: str
+    path: Path
+    category: str
+    sessions: int = 0
+    language: str | None = None
+    git: dict | None = None
+    last_modified: float = 0.0
+    description: str | None = None
+
+
+# ── Git helpers ──────────────────────────────────────────────────────
+
+def git(cwd: Path, *args: str) -> str:
+    try:
+        r = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            text=True,
+        )
+        return r.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+
+
+def git_info(path: Path) -> dict | None:
+    if not (path / ".git").exists():
+        return None
+    branch = git(path, "branch", "--show-current") or "(detached)"
+    dirty_raw = git(path, "status", "--porcelain")
+    dirty = len([ln for ln in dirty_raw.splitlines() if ln.strip()])
+    ahead_raw = git(path, "rev-list", "--count", "@{u}..HEAD")
+    ahead = int(ahead_raw) if ahead_raw.isdigit() else (0 if ahead_raw == "0" else 1)
+    last = git(path, "log", "-1", "--format=%cr")
+    return {"branch": branch, "dirty": dirty, "ahead": ahead, "last": last}
+
+
+# ── Language detection ──────────────────────────────────────────────
+
+LANG_MAP = {
+    ".ts": "TypeScript", ".tsx": "TypeScript",
+    ".js": "JavaScript", ".jsx": "JavaScript",
+    ".py": "Python",
+    ".go": "Go", ".rs": "Rust",
+    ".java": "Java", ".kt": "Kotlin",
+    ".rb": "Ruby",
+    ".tf": "Terraform", ".hcl": "HCL",
+    ".sh": "Shell", ".bash": "Shell", ".zsh": "Shell",
+    ".md": "Markdown",
+    ".yaml": "YAML", ".yml": "YAML",
+    ".lua": "Lua",
+    ".nix": "Nix",
+}
+
+
+def detect_language(path: Path) -> str | None:
+    """Best-effort language guess from top-level + 1-deep file extensions."""
+    counts: dict[str, int] = {}
+    try:
+        for top in path.iterdir():
+            if top.name.startswith(".") or top.name == "node_modules":
+                continue
+            if top.is_file():
+                ext = top.suffix.lower()
+                if ext in LANG_MAP:
+                    counts[LANG_MAP[ext]] = counts.get(LANG_MAP[ext], 0) + 1
+            elif top.is_dir():
+                try:
+                    for sub in top.iterdir():
+                        if sub.is_file():
+                            ext = sub.suffix.lower()
+                            if ext in LANG_MAP:
+                                counts[LANG_MAP[ext]] = counts.get(LANG_MAP[ext], 0) + 1
+                except OSError:
+                    pass
+    except OSError:
+        return None
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+# ── Claude Code session lookup ──────────────────────────────────────
+
+def encoded_project_dir(path: Path) -> str:
+    """Encode an absolute path the way Claude Code does for ~/.claude/projects/."""
+    return re.sub(r"[/.]", "-", str(path))
+
+
+def session_count(path: Path) -> int:
+    d = CLAUDE_PROJECTS / encoded_project_dir(path)
+    if not d.exists():
+        return 0
+    try:
+        return sum(1 for f in d.iterdir() if f.suffix == ".jsonl")
+    except OSError:
+        return 0
+
+
+def extract_cwd_from_jsonl(jsonl: Path) -> str | None:
+    """Walk a session file until we find a message with a 'cwd' field."""
+    try:
+        with jsonl.open() as f:
+            for i, line in enumerate(f):
+                if i > 50:
+                    break
+                try:
+                    d = json.loads(line)
+                    cwd = d.get("cwd")
+                    if cwd:
+                        return cwd
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return None
+
+
+def discover_claude_history() -> list[Project]:
+    """Read ~/.claude/projects to find directories the user has actually used Claude in."""
+    if not CLAUDE_PROJECTS.exists():
+        return []
+    out: list[Project] = []
+    try:
+        for encoded in CLAUDE_PROJECTS.iterdir():
+            if not encoded.is_dir():
+                continue
+            jsonls = sorted(
+                (f for f in encoded.iterdir() if f.suffix == ".jsonl"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+            if not jsonls:
+                continue
+            cwd_str = extract_cwd_from_jsonl(jsonls[0])
+            if not cwd_str:
+                continue
+            cwd = Path(cwd_str)
+            if not cwd.exists():
+                continue
+            out.append(Project(
+                name=cwd.name or str(cwd),
+                path=cwd,
+                category="history",
+                sessions=len(jsonls),
+                last_modified=jsonls[0].stat().st_mtime,
+            ))
+    except OSError:
+        pass
+    return out
+
+
+# ── Other discoverers ───────────────────────────────────────────────
+
+def discover_standalone() -> list[Project]:
+    out = []
+    for path in STANDALONE_REPOS:
+        if path.exists():
+            try:
+                mt = path.stat().st_mtime
+            except OSError:
+                mt = 0.0
+            out.append(Project(
+                name=path.name,
+                path=path,
+                category="repo",
+                last_modified=mt,
+            ))
+    return out
+
+
+def discover_tries() -> list[Project]:
+    if not TRIES.exists():
+        return []
+    out = []
+    for sub in TRIES.iterdir():
+        if not sub.is_dir() or sub.name.startswith("."):
+            continue
+        try:
+            mt = sub.stat().st_mtime
+        except OSError:
+            mt = 0.0
+        # Strip YYYY-MM-DD- prefix for display name
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})-(.+)$", sub.name)
+        name = m.group(2) if m else sub.name
+        desc = m.group(1) if m else None
+        out.append(Project(
+            name=name,
+            path=sub,
+            category="experiment",
+            last_modified=mt,
+            description=desc,
+        ))
+    return out
+
+
+def discover_pi_extensions() -> list[Project]:
+    if not PI_EXTENSIONS.exists():
+        return []
+    out = []
+    try:
+        for entry in PI_EXTENSIONS.iterdir():
+            if entry.name.startswith(".") or entry.name == "node_modules":
+                continue
+            # Resolve symlinks to the real location in dotfiles
+            real = entry.resolve() if entry.is_symlink() else entry
+            if real.is_dir():
+                out.append(Project(
+                    name=entry.name,
+                    path=real,
+                    category="extension",
+                    last_modified=real.stat().st_mtime if real.exists() else 0.0,
+                    language="TypeScript",
+                ))
+            elif real.is_file() and real.suffix == ".ts":
+                out.append(Project(
+                    name=entry.stem,
+                    path=real.parent,
+                    category="extension",
+                    last_modified=real.stat().st_mtime,
+                    language="TypeScript",
+                    description=real.name,
+                ))
+    except OSError:
+        pass
+    return out
+
+
+def discover_claude_skills() -> list[Project]:
+    if not CLAUDE_SKILLS.exists():
+        return []
+    out = []
+    try:
+        for entry in CLAUDE_SKILLS.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            skill_md = entry / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            real = entry.resolve() if entry.is_symlink() else entry
+            desc: str | None = None
+            try:
+                with skill_md.open() as f:
+                    for line in f:
+                        s = line.strip()
+                        if s and not s.startswith("#") and not s.startswith("---"):
+                            desc = s[:80]
+                            break
+            except OSError:
+                pass
+            out.append(Project(
+                name=entry.name,
+                path=real,
+                category="skill",
+                last_modified=real.stat().st_mtime if real.exists() else 0.0,
+                description=desc,
+            ))
+    except OSError:
+        pass
+    return out
+
+
+def discover_mcp_servers() -> list[Project]:
+    if not MCP_SERVERS.exists():
+        return []
+    out = []
+    try:
+        for entry in MCP_SERVERS.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            out.append(Project(
+                name=entry.name,
+                path=entry,
+                category="mcp",
+                last_modified=entry.stat().st_mtime,
+            ))
+    except OSError:
+        pass
+    return out
+
+
+# ── Merge & enrich ──────────────────────────────────────────────────
+
+def enrich_in_parallel(projects: list[Project]) -> None:
+    """Populate git / language / session fields in parallel."""
+    def enrich(p: Project) -> None:
+        if p.git is None:
+            p.git = git_info(p.path)
+        if p.language is None:
+            p.language = detect_language(p.path)
+        if p.sessions == 0:
+            p.sessions = session_count(p.path)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(enrich, projects))
+
+
+def discover_all() -> list[Project]:
+    discoverers = [
+        discover_claude_history,
+        discover_standalone,
+        discover_tries,
+        discover_pi_extensions,
+        discover_claude_skills,
+        discover_mcp_servers,
+    ]
+    all_projects: list[Project] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(discoverers)) as ex:
+        for batch in ex.map(lambda f: f(), discoverers):
+            all_projects.extend(batch)
+
+    # Deduplicate by real path. When duplicates exist, prefer non-"history"
+    # category (history entries lose metadata like language/description).
+    by_path: dict[Path, Project] = {}
+    for p in all_projects:
+        try:
+            key = p.path.resolve()
+        except OSError:
+            key = p.path
+        if key not in by_path:
+            by_path[key] = p
+        else:
+            existing = by_path[key]
+            if existing.category == "history" and p.category != "history":
+                # Merge: keep the more specific category + its metadata,
+                # but carry over session count from history if higher.
+                p.sessions = max(p.sessions, existing.sessions)
+                by_path[key] = p
+            elif existing.category != "history":
+                existing.sessions = max(existing.sessions, p.sessions)
+
+    enrich_in_parallel(list(by_path.values()))
+
+    # Sort: most recent first, but group by category so related projects cluster
+    return sorted(
+        by_path.values(),
+        key=lambda p: (-p.last_modified, p.category),
+    )
+
+
+# ── Formatting for fzf ──────────────────────────────────────────────
+
+def format_line(p: Project) -> str:
+    """Build one tab-delimited row for fzf: path\tdisplay."""
+    color = CATEGORY_COLOR.get(p.category, "")
+    badge = f"{color}{p.category:<10}{RESET}"
+    name = f"{BOLD}{p.name:<30}{RESET}"
+
+    # Git segment
+    if p.git:
+        branch = p.git["branch"]
+        marks = []
+        if p.git["dirty"]:
+            marks.append(f"\033[33m●{p.git['dirty']}\033[0m")
+        if p.git["ahead"]:
+            marks.append(f"\033[36m↑{p.git['ahead']}\033[0m")
+        git_seg = f"{DIM}{branch}{RESET}"
+        if marks:
+            git_seg += " " + " ".join(marks)
+    else:
+        git_seg = f"{DIM}—{RESET}"
+
+    sess = f"{DIM}{p.sessions}s{RESET}" if p.sessions else f"{DIM}·{RESET}"
+    lang = f"{DIM}{p.language or '·'}{RESET}"
+
+    display = f"{badge}  {name}  {git_seg:<30}  {sess:<6}  {lang}"
+    return f"{p.path}\t{display}"
+
+
+# ── Preview pane ────────────────────────────────────────────────────
+
+def render_preview(path_str: str) -> None:
+    """Print a detailed preview of the project at `path_str` for fzf."""
+    path = Path(path_str)
+    if not path.exists():
+        print(f"(path no longer exists: {path})")
+        return
+
+    print(f"{BOLD}{path}{RESET}")
+    print()
+
+    # Git block
+    if (path / ".git").exists():
+        branch = git(path, "branch", "--show-current") or "(detached)"
+        print(f"{BOLD}branch{RESET}  {branch}")
+        remote = git(path, "remote", "get-url", "origin")
+        if remote:
+            short = re.sub(r"^.*[:/]", "", remote).replace(".git", "")
+            print(f"{BOLD}remote{RESET}  {short}")
+        log = git(path, "log", "-5", "--format=%h %cr  %s")
+        if log:
+            print(f"\n{DIM}recent commits{RESET}")
+            for line in log.splitlines():
+                print(f"  {line}")
+        dirty = git(path, "status", "--porcelain")
+        if dirty:
+            print(f"\n{DIM}uncommitted{RESET}")
+            for line in dirty.splitlines()[:10]:
+                print(f"  {line}")
+            if len(dirty.splitlines()) > 10:
+                print(f"  …and {len(dirty.splitlines()) - 10} more")
+        print()
+
+    # Session count (encoded)
+    n = session_count(path)
+    if n:
+        print(f"{BOLD}claude sessions{RESET}  {n}")
+        print()
+
+    # README snippet
+    for name in ("README.md", "readme.md", "README.rst", "README"):
+        readme = path / name
+        if readme.exists():
+            try:
+                content = readme.read_text(errors="replace")
+                lines = [ln for ln in content.splitlines() if ln.strip()][:15]
+                print(f"{DIM}── {name} ──{RESET}")
+                for ln in lines:
+                    print(f"  {ln[:80]}")
+                print()
+            except OSError:
+                pass
+            break
+
+    # Top-level file listing
+    try:
+        entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
+        entries = [e for e in entries if not e.name.startswith(".") or e.name == ".git"][:18]
+        if entries:
+            print(f"{DIM}── top-level ──{RESET}")
+            for e in entries:
+                suffix = "/" if e.is_dir() else ""
+                print(f"  {e.name}{suffix}")
+    except OSError:
+        pass
+
+
+# ── Main ────────────────────────────────────────────────────────────
+
+def run_fzf(projects: list[Project]) -> Path | None:
+    if not shutil.which("fzf"):
+        print("fzf not found on PATH", file=sys.stderr)
+        sys.exit(1)
+    if not projects:
+        print("no projects discovered", file=sys.stderr)
+        sys.exit(1)
+
+    lines = "\n".join(format_line(p) for p in projects)
+    self_path = os.path.abspath(sys.argv[0])
+    preview_cmd = f"{self_path} --preview {{1}}"
+
+    result = subprocess.run(
+        [
+            "fzf",
+            "--ansi",
+            "--delimiter", "\t",
+            "--with-nth", "2",
+            "--nth", "2",
+            "--preview", preview_cmd,
+            "--preview-window", "right,60%,border-left",
+            "--height", "90%",
+            "--reverse",
+            "--prompt", "projects> ",
+            "--header", "enter=open · esc=cancel",
+        ],
+        input=lines,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    selected_path = result.stdout.split("\t", 1)[0].strip()
+    return Path(selected_path) if selected_path else None
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Pick a project and launch Claude Code in it.")
+    ap.add_argument("--print", dest="print_only", action="store_true",
+                    help="Print selected path to stdout instead of exec'ing claude.")
+    ap.add_argument("--preview", metavar="PATH",
+                    help="Internal: render preview pane for PATH (used by fzf).")
+    args = ap.parse_args()
+
+    if args.preview:
+        render_preview(args.preview)
+        return
+
+    projects = discover_all()
+    selected = run_fzf(projects)
+    if selected is None:
+        sys.exit(130)  # standard "cancelled by user" exit code
+
+    if args.print_only:
+        print(selected)
+        return
+
+    # Exec claude in the selected directory
+    os.chdir(selected)
+    claude_bin = shutil.which("claude") or "claude"
+    os.execvp(claude_bin, ["claude"])
+
+
+if __name__ == "__main__":
+    main()

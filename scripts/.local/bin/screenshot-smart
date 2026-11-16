@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Hover a window to snap-select it; click-drag for a free-form region.
+# Pipes the screenshot to the action chosen by the first arg.
+#   screenshot-smart copy        -> wl-copy -t image/png
+#   screenshot-smart satty       -> satty --filename -
+#   screenshot-smart save [path] -> save to file (default: ~/Pictures/YYYYmmdd_HHMMSS.png)
+
+set -euo pipefail
+
+action="${1:-copy}"
+
+active_ws_ids=$(hyprctl -j monitors | jq '[.[].activeWorkspace.id]')
+
+geom=$(
+  hyprctl -j clients \
+    | jq -r --argjson ws "$active_ws_ids" '
+        .[]
+        | select(.workspace.id as $id | $ws | index($id))
+        | select(.hidden == false)
+        | "\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"
+      ' \
+    | slurp
+)
+
+case "$action" in
+  copy)
+    grim -g "$geom" - | wl-copy -t image/png
+    ;;
+  satty)
+    grim -g "$geom" - | satty --filename -
+    ;;
+  save)
+    out="${2:-$HOME/Pictures/$(date +%Y%m%d_%H%M%S).png}"
+    grim -g "$geom" "$out"
+    ;;
+  *)
+    echo "unknown action: $action" >&2
+    exit 2
+    ;;
+esac

@@ -356,6 +356,7 @@ browser_stem() {
   printf '%s' "$desktop_id" | tr '[:upper:]' '[:lower:]'
 }
 
+# setsid -f: a plain `&` child keeps tmux's tty and is SIGHUP'd before a cold browser maps.
 run_browser_command() {
   local browser_cmd mode url
 
@@ -368,9 +369,9 @@ run_browser_command() {
   fi
 
   if [[ $mode == "window" ]]; then
-    "$browser_cmd" --new-window "$url" >/dev/null 2>&1 &
+    setsid -f "$browser_cmd" --new-window "$url" </dev/null >/dev/null 2>&1
   else
-    "$browser_cmd" --new-tab "$url" >/dev/null 2>&1 &
+    setsid -f "$browser_cmd" --new-tab "$url" </dev/null >/dev/null 2>&1
   fi
 }
 
@@ -387,7 +388,7 @@ open_with_browser_commands() {
     fi
   done
 
-  xdg-open "$url" &>/dev/null &
+  setsid -f xdg-open "$url" </dev/null >/dev/null 2>&1
 }
 
 open_url_in_browser() {
@@ -418,7 +419,7 @@ open_url_in_browser() {
       open_with_browser_commands "$mode" "$url" vivaldi vivaldi-stable
       ;;
     *)
-      xdg-open "$url" &>/dev/null &
+      setsid -f xdg-open "$url" </dev/null >/dev/null 2>&1
       ;;
   esac
 }
