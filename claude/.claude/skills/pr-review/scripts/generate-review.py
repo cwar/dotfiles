@@ -25,6 +25,27 @@ The plan JSON structure:
                 {"path": "path/to/big_file.py", "start": 10, "end": 50, "label": "helper functions"}
             ],
             "description": "Why these files are grouped",
+            "coverage": [
+                {
+                    "code": {"path": "src/service.py", "start": 40, "end": 58},
+                    "tests": [
+                        {
+                            "path": "tests/test_service.py",
+                            "start": 90,
+                            "end": 104,
+                            "name": "test_deadline_is_enforced",
+                            "proves": "Raises TimeoutError after the deadline",
+                            "confidence": "high",
+                            "basis": "calls the changed function directly and asserts the error"
+                        }
+                    ]
+                },
+                {
+                    "code": {"path": "src/service.py", "start": 51, "end": 53},
+                    "tests": [],
+                    "gap": "Retry backoff branch is not exercised"
+                }
+            ],
             "ai_notes": [
                 {"severity": "issue", "text": "Something important"},
                 {"severity": "suggestion", "text": "Consider this", "evidence": [
@@ -41,6 +62,12 @@ The plan JSON structure:
 Evidence fields are optional. When present, each evidence item contains the shell
 command that was run and its output. This ensures observations about code — especially
 code outside the diff — are grounded in real extracted snippets, not AI recollection.
+
+Coverage fields are optional. Each entry maps a changed production range to the test
+ranges that prove it. Mappings should include confidence and basis unless source is
+"measured" by a real coverage tool. An entry with tests=[] and a gap explanation marks
+an untested range. Covered tests render inline beneath production code and in a summary
+matrix; gaps override broader covered ranges so untested branches stay visible.
 
 Artifacts are optional supplemental materials — diagrams, references, and contextual
 notes — that help the reviewer understand the change without reading every line.
@@ -364,7 +391,8 @@ def is_markdown_file(filepath: str) -> bool:
 
 
 def render_diff_html(diff_text: str, file_path: str, phase_num: int,
-                     filter_start: int = None, filter_end: int = None) -> str:
+                     filter_start: int = None, filter_end: int = None,
+                     line_marks: dict = None, strips: dict = None) -> str:
     """Render a unified diff as syntax-highlighted HTML with interactive line gutters.
 
     Parses @@ hunk headers to track real old/new file line numbers and embeds
@@ -375,8 +403,17 @@ def render_diff_html(diff_text: str, file_path: str, phase_num: int,
     filter_end] are rendered. Deleted lines use the current new_line position
     (they're "at" the point where old content was removed). This enables
     function-by-function review of large files.
+
+    line_marks maps a new-file line number to an extra CSS class
+    ("cov-covered" / "cov-gap") so test-covered ranges get a left stripe.
+    strips maps a new-file line number to pre-rendered HTML inserted directly
+    after that row — used to anchor the covering-test panel beneath the code
+    it proves. Strips whose anchor line is never emitted are appended at the
+    end so they are never silently dropped.
     """
     filtering = filter_start is not None and filter_end is not None
+    line_marks = line_marks or {}
+    strips = dict(strips or {})
     lines = []
     line_idx = 0
     old_line = 0
@@ -439,11 +476,13 @@ def render_diff_html(diff_text: str, file_path: str, phase_num: int,
             lines.append(pending_hunk)
             pending_hunk = None
 
+        emitted_new_line = None
         if raw_line.startswith("+"):
             css_class = "diff-add"
             old_ln_display = ""
             new_ln_display = str(new_line)
             data_attrs = f'data-new-line="{new_line}"'
+            emitted_new_line = new_line
             new_line += 1
         elif raw_line.startswith("-"):
             css_class = "diff-del"
@@ -456,8 +495,11 @@ def render_diff_html(diff_text: str, file_path: str, phase_num: int,
             old_ln_display = str(old_line)
             new_ln_display = str(new_line)
             data_attrs = f'data-old-line="{old_line}" data-new-line="{new_line}"'
+            emitted_new_line = new_line
             old_line += 1
             new_line += 1
+        if emitted_new_line is not None and emitted_new_line in line_marks:
+            css_class += " " + line_marks[emitted_new_line]
         # Wrap the diff prefix char (+/-/space) in a span for coloring
         if len(escaped) > 0:
             prefix_char = escaped[0]
@@ -475,6 +517,12 @@ def render_diff_html(diff_text: str, file_path: str, phase_num: int,
         )
         line_idx += 1
         any_emitted = True
+        if emitted_new_line is not None and emitted_new_line in strips:
+            lines.append(strips.pop(emitted_new_line))
+
+    # Any strip whose anchor line was filtered out still gets shown.
+    for _, strip_html in sorted(strips.items()):
+        lines.append(strip_html)
     return "\n".join(lines)
 
 
@@ -717,11 +765,355 @@ def render_artifacts_section(artifacts: list[dict], id_prefix: str, heading: str
     )
 
 
+# ── Test-coverage linking ────────────────────────────────────────────
+#
+# A phase may declare which tests prove which production line ranges, so the
+# reviewer sees the covering test *inline, beneath the code it covers* instead
+# of reviewing all the production code and then all the tests separately.
+#
+# Coverage is normally INFERRED by the AI (test calls the function, mocks its
+# module, asserts its error) rather than MEASURED by a coverage tool. That
+# distinction is rendered explicitly — an inferred mapping presented as ground
+# truth is exactly the kind of confident-but-wrong claim that erodes trust.
+
+CONFIDENCE_MAP = {
+    "high": ("high confidence", "cov-conf-high"),
+    "medium": ("medium confidence", "cov-conf-medium"),
+    "low": ("low confidence", "cov-conf-low"),
+}
+
+_source_cache: dict = {}
+
+# Populated by generate_html so coverage panels can fall back to the diff when
+# the working tree / head SHA is unavailable.
+_diff_index: dict = {}
+
+
+def new_file_lines_from_diff(diff_text: str) -> dict:
+    """Map new-file line number -> text, using the new-file side of a diff.
+
+    Only lines present in the diff (additions + context) are recoverable; a
+    unified diff omits unchanged regions outside its hunks.
+    """
+    out = {}
+    new_line = 0
+    for raw in (diff_text or "").splitlines():
+        if raw.startswith("@@"):
+            m = re.match(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', raw)
+            if m:
+                new_line = int(m.group(2))
+            continue
+        if raw.startswith(("+++", "---", "diff --git", "index ", "new file mode",
+                           "deleted file mode", "old mode", "new mode",
+                           "similarity index", "rename from", "rename to")):
+            continue
+        if raw.startswith("-"):
+            continue
+        if raw.startswith("+") or raw.startswith(" ") or raw == "":
+            out[new_line] = raw[1:] if raw else ""
+            new_line += 1
+    return out
+
+
+def slice_source(path: str, start: int, end: int,
+                 repo_dir: str = None, head_sha: str = None) -> tuple:
+    """Return (text, partial) for lines [start, end] (1-based, inclusive).
+
+    Prefers the real file at the PR head. Falls back to reconstructing the
+    new-file side from the diff, which is enough whenever the covering test
+    was added or modified by this PR. partial=True means some lines in the
+    range were not recoverable, so the reviewer should not read the snippet
+    as the complete test body.
+    """
+    if not path or not start or not end:
+        return None, False
+    key = (path, repo_dir, head_sha)
+    if key not in _source_cache:
+        _source_cache[key] = fetch_file_content(path, repo_dir, head_sha)
+    content = _source_cache[key]
+    if content is not None:
+        lines = content.splitlines()
+        if start <= len(lines):
+            return "\n".join(lines[start - 1:end]), False
+
+    diff_lines = _diff_index.get(path)
+    if diff_lines:
+        recovered_count = sum(1 for ln in range(start, end + 1) if ln in diff_lines)
+        if recovered_count:
+            partial = recovered_count < (end - start + 1)
+            # Preserve one output row per requested line. Otherwise, omitted
+            # unchanged lines would shift every subsequent displayed line
+            # number and make the source panel actively misleading.
+            recovered = [
+                diff_lines.get(ln, "⋯  unchanged line not present in diff")
+                for ln in range(start, end + 1)
+            ]
+            return "\n".join(recovered), partial
+
+    return None, False
+
+
+def _cov_range_label(path: str, start, end) -> str:
+    if start and end:
+        return f"{path}:{start}–{end}"
+    return path
+
+
+def render_cov_test_item(test: dict, item_id: str,
+                         repo_dir: str = None, head_sha: str = None) -> str:
+    """Render one covering test: name, claim, confidence, and its source."""
+    name = html.escape(test.get("name", "") or "test")
+    path = test.get("path", "")
+    start, end = test.get("start"), test.get("end")
+    proves = format_inline_code(html.escape(test.get("proves", "")))
+    basis = format_inline_code(html.escape(test.get("basis", "")))
+    measured = test.get("source") == "measured"
+    conf = (test.get("confidence") or "").lower()
+    conf_label, conf_class = CONFIDENCE_MAP.get(conf, ("", ""))
+
+    if measured:
+        badge = '<span class="cov-badge cov-measured" title="Reported by a coverage tool">📐 measured</span>'
+    elif conf_class:
+        badge = (f'<span class="cov-badge {conf_class}" '
+                 f'title="AI-inferred coverage — verify against the test body">'
+                 f'● {html.escape(conf_label)}</span>')
+    else:
+        badge = ''
+
+    src, partial = slice_source(path, start, end, repo_dir, head_sha)
+    if src is not None:
+        lang = get_hljs_language(path)
+        lang_attr = f' data-lang="{lang}"' if lang else ''
+        num_start = start or 1
+        numbered = []
+        for offset, line in enumerate(src.splitlines()):
+            numbered.append(
+                f'<div class="cov-src-row">'
+                f'<div class="cov-src-ln">{num_start + offset}</div>'
+                f'<div class="cov-src-code">{html.escape(line)}</div>'
+                f'</div>'
+            )
+        partial_note = ('<div class="cov-src-partial">⚠️ Reconstructed from the diff — '
+                        'unchanged lines in this range are not shown.</div>') if partial else ''
+        source_html = (f'<div class="cov-test-source"{lang_attr}>'
+                       + partial_note + "\n".join(numbered) + '</div>')
+    else:
+        source_html = ('<div class="cov-test-source cov-src-missing">'
+                       'Source unavailable — could not read this range from the PR head '
+                       'or the diff. Open the test file in its own phase to read it.</div>')
+
+    return (
+        f'<div class="cov-test" id="{item_id}">'
+        f'<div class="cov-test-head" onclick="toggleCovStrip(\'{item_id}\')">'
+        f'<span class="cov-test-caret">▸</span>'
+        f'<span class="cov-test-name"><code>{name}</code></span>'
+        f'{badge}'
+        f'<span class="cov-test-loc">{html.escape(_cov_range_label(path, start, end))}</span>'
+        f'</div>'
+        f'<div class="cov-test-proves"><strong>proves:</strong> {proves}</div>'
+        f'<div class="cov-test-body" style="display:none">'
+        f'{f"<div class=cov-test-basis><strong>basis:</strong> {basis}</div>" if basis else ""}'
+        f'{source_html}'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def render_cov_strip(entry: dict, strip_id: str,
+                     repo_dir: str = None, head_sha: str = None) -> str:
+    """Render the inline panel anchored beneath a covered production range."""
+    tests = entry.get("tests") or []
+    code = entry.get("code") or {}
+    code_label = _cov_range_label(code.get("path", ""), code.get("start"), code.get("end"))
+
+    if not tests:
+        gap = format_inline_code(html.escape(entry.get("gap", "No test covers this change.")))
+        return (
+            f'<div class="cov-strip cov-strip-gap">'
+            f'<div class="cov-strip-head">'
+            f'<span class="cov-strip-icon">🚨</span>'
+            f'<span class="cov-strip-title">No test covers this</span>'
+            f'<span class="cov-test-loc">{html.escape(code_label)}</span>'
+            f'</div>'
+            f'<div class="cov-gap-text">{gap}</div>'
+            f'</div>'
+        )
+
+    items = [render_cov_test_item(t, f"{strip_id}-t{i}", repo_dir, head_sha)
+             for i, t in enumerate(tests)]
+    plural = "s" if len(tests) != 1 else ""
+    return (
+        f'<div class="cov-strip">'
+        f'<div class="cov-strip-head">'
+        f'<span class="cov-strip-icon">🧪</span>'
+        f'<span class="cov-strip-title">Covered by {len(tests)} test{plural}</span>'
+        f'<span class="cov-test-loc">{html.escape(code_label)}</span>'
+        f'</div>'
+        + "\n".join(items) +
+        f'</div>'
+    )
+
+
+def render_cov_proves_strip(entries: list[dict], strip_id: str) -> str:
+    """Reciprocal strip shown on the TEST side: what production code this proves."""
+    rows = []
+    for e in entries:
+        code = e.get("code") or {}
+        label = _cov_range_label(code.get("path", ""), code.get("start"), code.get("end"))
+        proves = format_inline_code(html.escape(e.get("proves", "")))
+        rows.append(
+            f'<div class="cov-proves-row">'
+            f'<span class="cov-test-loc">{html.escape(label)}</span>'
+            f'{f"<span class=cov-proves-text>{proves}</span>" if proves else ""}'
+            f'</div>'
+        )
+    return (
+        f'<div class="cov-strip cov-strip-proves" id="{strip_id}">'
+        f'<div class="cov-strip-head">'
+        f'<span class="cov-strip-icon">⬅️</span>'
+        f'<span class="cov-strip-title">Proves</span>'
+        f'</div>'
+        + "\n".join(rows) +
+        f'</div>'
+    )
+
+
+def build_coverage_render_data(coverage: list, file_path: str, phase_num: int,
+                               repo_dir: str = None, head_sha: str = None) -> tuple:
+    """Compute (line_marks, strips) for one file within one phase.
+
+    line_marks: new-file line number -> CSS class for the coverage stripe.
+    strips:     new-file line number -> HTML inserted after that row.
+
+    Handles both directions:
+      - file_path is production code -> 🧪 strip listing covering tests
+      - file_path is a test file     -> ⬅️ strip listing what it proves
+    """
+    line_marks: dict = {}
+    strips: dict = {}
+    if not coverage:
+        return line_marks, strips
+
+    proves_by_anchor: dict = {}
+
+    for idx, entry in enumerate(coverage):
+        code = entry.get("code") or {}
+        c_path, c_start, c_end = code.get("path"), code.get("start"), code.get("end")
+        has_tests = bool(entry.get("tests"))
+
+        if c_path == file_path and c_start and c_end:
+            mark = "cov-covered" if has_tests else "cov-gap"
+            for ln in range(c_start, c_end + 1):
+                # Gap wins on overlap. A gap entry is always the narrower, more
+                # specific claim ("this range has tests, BUT this branch inside
+                # it is unexercised"), and it is the one carrying actionable
+                # risk — a reviewer scanning green stripes must not sail past
+                # an untested branch nested inside a covered function.
+                if mark == "cov-gap" or line_marks.get(ln) != "cov-gap":
+                    line_marks[ln] = mark
+            strips[c_end] = strips.get(c_end, "") + render_cov_strip(
+                entry, f"cov-p{phase_num}-{idx}", repo_dir, head_sha)
+
+        for test in entry.get("tests") or []:
+            if test.get("path") != file_path:
+                continue
+            t_start, t_end = test.get("start"), test.get("end")
+            if not (t_start and t_end):
+                continue
+            for ln in range(t_start, t_end + 1):
+                if line_marks.get(ln) != "cov-gap":
+                    line_marks.setdefault(ln, "cov-covered")
+            proves_by_anchor.setdefault(t_end, []).append(
+                {"code": code, "proves": test.get("proves", "")})
+
+    for anchor, entries in proves_by_anchor.items():
+        strips[anchor] = strips.get(anchor, "") + render_cov_proves_strip(
+            entries, f"cov-p{phase_num}-proves-{anchor}")
+
+    return line_marks, strips
+
+
+def render_coverage_matrix(phases: list, has_context_tab: bool = False) -> str:
+    """Build the 🧪 Coverage tab: every changed range and whether a test proves it."""
+    rows = []
+    covered = 0
+    gaps = 0
+    for i, phase in enumerate(phases):
+        phase_num = i + 1
+        for entry in phase.get("coverage") or []:
+            code = entry.get("code") or {}
+            code_label = _cov_range_label(
+                code.get("path", ""), code.get("start"), code.get("end"))
+            tests = entry.get("tests") or []
+            if tests:
+                covered += 1
+                test_cells = []
+                for t in tests:
+                    conf = (t.get("confidence") or "").lower()
+                    _, conf_class = CONFIDENCE_MAP.get(conf, ("", ""))
+                    badge = (f'<span class="cov-dot {conf_class}" title="{html.escape(conf)}"></span>'
+                             if conf_class else '')
+                    test_cells.append(
+                        f'<div class="cov-matrix-test">'
+                        f'{badge}<code>{html.escape(t.get("name", "") or t.get("path", ""))}</code>'
+                        f'<span class="cov-test-loc">{html.escape(_cov_range_label(t.get("path", ""), t.get("start"), t.get("end")))}</span>'
+                        f'</div>'
+                    )
+                status = '<span class="cov-status cov-status-ok">✓ covered</span>'
+                detail = ''.join(test_cells)
+            else:
+                gaps += 1
+                status = '<span class="cov-status cov-status-gap">⚠ gap</span>'
+                detail = format_inline_code(html.escape(entry.get("gap", "")))
+            rows.append(
+                f'<tr>'
+                f'<td class="cov-cell-phase"><a href="#" onclick="goPhase({phase_num});return false">P{phase_num}</a></td>'
+                f'<td class="cov-cell-code"><code>{html.escape(code_label)}</code></td>'
+                f'<td class="cov-cell-status">{status}</td>'
+                f'<td class="cov-cell-tests">{detail}</td>'
+                f'</tr>'
+            )
+
+    if not rows:
+        return ""
+
+    total = covered + gaps
+    return f'''
+    <div class="coverage-tab" id="coverage-tab" style="display:none">
+        <h2>🧪 Test Coverage Map</h2>
+        <p class="phase-desc">Which changed ranges have a test that proves them. Coverage is
+        AI-inferred unless marked 📐 measured — treat it as a reading aid, not a guarantee.</p>
+        <div class="cov-summary">
+            <span class="cov-status cov-status-ok">✓ {covered} covered</span>
+            <span class="cov-status cov-status-gap">⚠ {gaps} gap{"s" if gaps != 1 else ""}</span>
+            <span class="cov-summary-total">{total} range{"s" if total != 1 else ""} mapped</span>
+        </div>
+        <div class="cov-table-wrap">
+            <table class="cov-table">
+                <thead><tr><th>Phase</th><th>Changed code</th><th>Status</th><th>Proven by</th></tr></thead>
+                <tbody>{"".join(rows)}</tbody>
+            </table>
+        </div>
+        <div class="phase-nav">
+            {"<button onclick='showContext()' class='btn btn-secondary'>← Context</button>" if has_context_tab else "<div></div>"}
+            <button onclick="goPhase(1)" class="btn btn-primary">Phase 1 →</button>
+        </div>
+    </div>
+    '''
+
+
 def generate_html(plan: dict, file_diffs: dict[str, str],
                   repo_dir: str = None, head_sha: str = None) -> str:
     pr = plan
     phases = pr["phases"]
     num_phases = len(phases)
+
+    # Index the diff so coverage panels can show test source even when the
+    # working tree / head SHA is unavailable.
+    _source_cache.clear()
+    _diff_index.clear()
+    for _path, _diff in file_diffs.items():
+        _diff_index[_path] = new_file_lines_from_diff(_diff)
 
     # Build impact panel
     impact_html = render_impact_panel(pr.get("impact_analysis"))
@@ -729,6 +1121,10 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
     # Build top-level artifacts (Context tab)
     top_artifacts = pr.get("artifacts", [])
     has_context_tab = len(top_artifacts) > 0
+
+    # Build the coverage matrix (Coverage tab)
+    coverage_tab_html = render_coverage_matrix(phases, has_context_tab)
+    has_coverage_tab = bool(coverage_tab_html)
 
     # Build phase sections
     phase_sections = []
@@ -740,6 +1136,7 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
         phase_additions = 0
         phase_deletions = 0
         phase_risk = phase.get("risk", "")
+        phase_coverage = phase.get("coverage") or []
 
         for entry in phase_files:
             f, f_start, f_end, f_label = normalize_file_entry(entry)
@@ -753,7 +1150,10 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
             phase_additions += adds
             phase_deletions += dels
 
-            diff_rendered = render_diff_html(diff, f, phase_num, f_start, f_end) if diff else '<div class="diff-meta" style="padding: 12px 16px; font-style: italic;">⚠️ No diff content found — if this is a new file, its content was not captured in the diff output</div>'
+            cov_marks, cov_strips = build_coverage_render_data(
+                phase_coverage, f, phase_num, repo_dir, head_sha)
+            diff_rendered = render_diff_html(diff, f, phase_num, f_start, f_end,
+                                             cov_marks, cov_strips) if diff else '<div class="diff-meta" style="padding: 12px 16px; font-style: italic;">⚠️ No diff content found — if this is a new file, its content was not captured in the diff output</div>'
             hljs_lang = get_hljs_language(f)
             lang_attr = f' data-lang="{hljs_lang}"' if hljs_lang else ''
             section_html = f' <span class="file-section">→ {html.escape(f_label)}</span>' if f_label else ''
@@ -813,7 +1213,7 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
             </div>
 
             <div class="phase-nav">
-                {"<button onclick='goPhase(" + str(phase_num - 1) + ")' class='btn btn-secondary'>← Phase " + str(phase_num - 1) + "</button>" if i > 0 else ("<button onclick='showContext()' class='btn btn-secondary'>← Context</button>" if has_context_tab else "<div></div>")}
+                {"<button onclick='goPhase(" + str(phase_num - 1) + ")' class='btn btn-secondary'>← Phase " + str(phase_num - 1) + "</button>" if i > 0 else ("<button onclick='showCoverage()' class='btn btn-secondary'>← Test Coverage</button>" if has_coverage_tab else ("<button onclick='showContext()' class='btn btn-secondary'>← Context</button>" if has_context_tab else "<div></div>"))}
                 {"<button onclick='goPhase(" + str(phase_num + 1) + ")' class='btn btn-primary'>Phase " + str(phase_num + 1) + " →</button>" if i < num_phases - 1 else "<button onclick='showSummary()' class='btn btn-primary'>View Summary →</button>"}
             </div>
         </div>
@@ -830,10 +1230,11 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
         {ctx_artifacts_html}
         <div class="phase-nav">
             <div></div>
-            <button onclick="goPhase(1)" class="btn btn-primary">Phase 1 \u2192</button>
+            {"<button onclick='showCoverage()' class='btn btn-primary'>Test Coverage →</button>" if has_coverage_tab else "<button onclick='goPhase(1)' class='btn btn-primary'>Phase 1 →</button>"}
         </div>
     </div>
         '''
+    context_tab_html += coverage_tab_html
 
     # Build the phase nav tabs (with optional risk dot indicators)
     risk_dots = {
@@ -845,6 +1246,8 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
     tabs = []
     if has_context_tab:
         tabs.append('<button class="tab active" id="tab-context" onclick="showContext()">📚 Context</button>')
+    if has_coverage_tab:
+        tabs.append('<button class="tab" id="tab-coverage" onclick="showCoverage()">🧪 Coverage</button>')
     for i, phase in enumerate(phases):
         phase_num = i + 1
         active = "active" if i == 0 and not has_context_tab else ""
@@ -878,6 +1281,12 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
         --hunk-text: #79c0ff;
         --flag-bg: #3d1f00;
         --flag-border: #d29922;
+        --cov-ok: #3fb950;
+        --cov-ok-bg: rgba(63, 185, 80, 0.06);
+        --cov-ok-border: rgba(63, 185, 80, 0.3);
+        --cov-gap: #d29922;
+        --cov-gap-bg: rgba(210, 153, 34, 0.07);
+        --cov-gap-border: rgba(210, 153, 34, 0.35);
     }}
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
@@ -887,7 +1296,17 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
         line-height: 1.5;
         padding: 0;
     }}
-    .container {{ max-width: 1100px; margin: 0 auto; padding: 20px; padding-bottom: 80px; }}
+    /* Wide code and evidence should use the viewport. Keep the page gutters
+       responsive rather than constraining the entire app to prose width. */
+    .container {{
+        width: 100%;
+        max-width: none;
+        margin: 0;
+        padding-top: 20px;
+        padding-left: clamp(16px, 3vw, 64px);
+        padding-right: clamp(16px, 3vw, 64px);
+        padding-bottom: 80px;
+    }}
 
     /* Header */
     .pr-header {{
@@ -907,6 +1326,7 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
         border-top: 1px solid var(--border);
         color: var(--text-muted);
         font-size: 0.95em;
+        max-width: 90ch;
     }}
 
     /* Tabs */
@@ -951,6 +1371,7 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
         font-style: italic;
         margin-bottom: 20px;
         font-size: 0.95em;
+        max-width: 90ch;
     }}
 
     /* Phase breakdown button */
@@ -1133,7 +1554,7 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
         border-top: 1px dashed var(--border);
         border-bottom: 1px dashed var(--border);
     }}
-    .file-diff > div:not(.diff-line-row):not(.inline-comment-form):not(.inline-comment-saved):not(.diff-fold) {{ padding: 1px 16px; white-space: pre; }}
+    .file-diff > div:not(.diff-line-row):not(.inline-comment-form):not(.inline-comment-saved):not(.diff-fold):not(.cov-strip) {{ padding: 1px 16px; white-space: pre; }}
     .diff-add {{ background: var(--add-bg); color: var(--text); }}
     .diff-del {{ background: var(--del-bg); color: var(--text); }}
     .diff-add .diff-prefix {{ color: var(--add-text); }}
@@ -1243,6 +1664,174 @@ def generate_html(plan: dict, file_diffs: dict[str, str],
         background: var(--accent);
         font-size: 13px;
     }}
+
+    /* ── Test coverage linking ─────────────────────────────────────────── */
+    /* Covered / uncovered stripes on diff rows. box-shadow rather than
+       border-left so the row height and the 48/48/32 gutter alignment used by
+       inline comments stay exactly as they were. */
+    .diff-line-row.cov-covered {{ box-shadow: inset 3px 0 0 var(--cov-ok); }}
+    .diff-line-row.cov-gap {{ box-shadow: inset 3px 0 0 var(--cov-gap); }}
+
+    .cov-strip {{
+        margin: 6px 0 10px 128px;  /* aligns under the code column */
+        border: 1px solid var(--cov-ok-border);
+        border-left: 3px solid var(--cov-ok);
+        border-radius: 6px;
+        background: var(--cov-ok-bg);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-size: 0.86em;
+        overflow: hidden;
+    }}
+    .cov-strip-gap {{
+        border-color: var(--cov-gap-border);
+        border-left-color: var(--cov-gap);
+        background: var(--cov-gap-bg);
+    }}
+    .cov-strip-proves {{
+        border-color: var(--border);
+        border-left-color: var(--accent);
+        background: rgba(88, 166, 255, 0.07);
+    }}
+    .cov-strip-head {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        font-weight: 600;
+    }}
+    .cov-strip-icon {{ font-size: 1em; }}
+    .cov-strip-title {{ flex: 1; }}
+    .cov-test-loc {{
+        color: var(--text-muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85em;
+        font-weight: 400;
+        margin-left: 8px;
+    }}
+    .cov-gap-text {{ padding: 0 10px 8px 10px; color: var(--text-muted); }}
+    .cov-proves-row {{ padding: 2px 10px 6px 10px; }}
+    .cov-proves-text {{ color: var(--text-muted); margin-left: 8px; }}
+
+    .cov-test {{ border-top: 1px solid var(--border); }}
+    .cov-test-head {{
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px 2px 10px;
+        cursor: pointer;
+        user-select: none;
+    }}
+    .cov-test-head:hover {{ background: rgba(255,255,255,0.04); }}
+    .cov-test-caret {{ color: var(--text-muted); width: 10px; }}
+    .cov-test-name {{ flex-shrink: 0; }}
+    .cov-test-name code {{ font-size: 0.95em; }}
+    .cov-test-proves {{ padding: 0 10px 8px 26px; color: var(--text-muted); }}
+    .cov-test-proves strong {{ color: var(--text); font-weight: 600; }}
+    .cov-test-basis {{
+        padding: 6px 10px 6px 26px;
+        color: var(--text-muted);
+        border-top: 1px dashed var(--border);
+    }}
+    .cov-test-basis strong {{ color: var(--text); font-weight: 600; }}
+
+    .cov-badge {{
+        font-size: 0.78em;
+        padding: 1px 6px;
+        border-radius: 10px;
+        font-weight: 600;
+        white-space: nowrap;
+    }}
+    .cov-conf-high {{ background: rgba(105,219,124,0.15); color: #69db7c; }}
+    .cov-conf-medium {{ background: rgba(255,212,59,0.15); color: #ffd43b; }}
+    .cov-conf-low {{ background: rgba(255,169,77,0.18); color: #ffa94d; }}
+    .cov-measured {{ background: rgba(88,166,255,0.18); color: var(--accent); }}
+
+    .cov-test-source {{
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.92em;
+        background: var(--bg);
+        border-top: 1px solid var(--border);
+        padding: 6px 0;
+        overflow-x: auto;
+    }}
+    .cov-src-row {{ display: flex; }}
+    .cov-src-ln {{
+        width: 52px;
+        min-width: 52px;
+        text-align: right;
+        padding-right: 10px;
+        color: var(--text-muted);
+        opacity: 0.4;
+        user-select: none;
+    }}
+    .cov-src-code {{ white-space: pre; padding-right: 16px; }}
+    .cov-src-missing, .cov-src-partial {{
+        padding: 8px 12px;
+        color: var(--text-muted);
+        font-style: italic;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }}
+
+    /* Coverage tab */
+    .coverage-tab {{
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 24px;
+    }}
+    .coverage-tab h2 {{ margin-bottom: 8px; }}
+    .cov-summary {{ display: flex; gap: 14px; align-items: center; margin: 14px 0; flex-wrap: wrap; }}
+    .cov-summary-total {{ color: var(--text-muted); font-size: 0.9em; }}
+    .cov-status {{ font-size: 0.85em; font-weight: 600; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }}
+    .cov-status-ok {{ background: rgba(105,219,124,0.15); color: #69db7c; }}
+    .cov-status-gap {{ background: rgba(255,169,77,0.18); color: #ffa94d; }}
+    /* Keep wide paths inside the coverage card. On narrow windows the table
+       scrolls within this wrapper; it never escapes the card's padding. */
+    .cov-table-wrap {{
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overscroll-behavior-inline: contain;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+    }}
+    .cov-table {{ width: 100%; min-width: 760px; border-collapse: collapse; font-size: 0.9em; }}
+    .cov-table th {{
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-muted);
+        background: rgba(255,255,255,0.025);
+        font-weight: 600;
+    }}
+    .cov-table td {{ padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }}
+    .cov-table tr:last-child td {{ border-bottom: none; }}
+    .cov-cell-phase {{ width: 4rem; }}
+    .cov-cell-code {{ width: 32%; }}
+    .cov-cell-status {{ width: 7rem; }}
+    .cov-cell-phase a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
+    .cov-cell-phase a:hover {{ text-decoration: underline; }}
+    .cov-cell-code code,
+    .cov-cell-tests code,
+    .cov-cell-tests .cov-test-loc {{
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }}
+    .cov-matrix-test {{ display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; min-width: 0; }}
+    .cov-matrix-test:last-child {{ margin-bottom: 0; }}
+    .cov-matrix-test .cov-test-loc {{ margin-left: auto; text-align: right; }}
+    .cov-cell-tests {{ line-height: 1.5; min-width: 0; }}
+    .cov-dot {{
+        display: inline-block;
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        margin-right: 6px;
+        vertical-align: middle;
+    }}
+    .cov-dot.cov-conf-high {{ background: #69db7c; }}
+    .cov-dot.cov-conf-medium {{ background: #ffd43b; }}
+    .cov-dot.cov-conf-low {{ background: #ffa94d; }}
 
     /* Inline comment form */
     .inline-comment-form {{
@@ -2878,6 +3467,7 @@ function stopAndDiscuss() {{
 // ── Phase navigation ──────────────────────────────────────────────────────
 
 const HAS_CONTEXT_TAB = !!document.getElementById('context-tab');
+const HAS_COVERAGE_TAB = !!document.getElementById('coverage-tab');
 
 function hideAllViews() {{
     for (let i = 1; i <= NUM_PHASES; i++) {{
@@ -2889,6 +3479,42 @@ function hideAllViews() {{
     if (HAS_CONTEXT_TAB) {{
         document.getElementById('context-tab').style.display = 'none';
         document.getElementById('tab-context').classList.remove('active');
+    }}
+    if (HAS_COVERAGE_TAB) {{
+        document.getElementById('coverage-tab').style.display = 'none';
+        document.getElementById('tab-coverage').classList.remove('active');
+    }}
+}}
+
+function showCoverage() {{
+    if (!HAS_COVERAGE_TAB) return;
+    hideAllViews();
+    document.getElementById('coverage-tab').style.display = '';
+    document.getElementById('tab-coverage').classList.add('active');
+    window.scrollTo(0, 0);
+}}
+
+// Expand/collapse a covering test's source inline, beneath the code it proves.
+function toggleCovStrip(id) {{
+    const el = document.getElementById(id);
+    if (!el) return;
+    const body = el.querySelector('.cov-test-body');
+    const caret = el.querySelector('.cov-test-caret');
+    if (!body) return;
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    if (caret) caret.textContent = open ? '\u25b8' : '\u25be';
+    if (!open && window.hljs) {{
+        body.querySelectorAll('.cov-src-code:not(.hljs-done)').forEach(function(node) {{
+            const lang = el.closest('.cov-test').querySelector('.cov-test-source');
+            const l = lang ? lang.dataset.lang : null;
+            try {{
+                if (l && window.hljs.getLanguage(l)) {{
+                    node.innerHTML = window.hljs.highlight(node.textContent, {{language: l}}).value;
+                }}
+            }} catch (e) {{ /* highlighting is best-effort */ }}
+            node.classList.add('hljs-done');
+        }});
     }}
 }}
 
@@ -3209,8 +3835,38 @@ function findFileBlock(phase, file) {{
     return null;
 }}
 
-function icKey(phase, file, start, end) {{
-    return phase + ':' + file + ':' + start + '-' + end;
+function selectedCoordinates(fileDiff, startIdx, endIdx) {{
+    let newLineStart = null, newLineEnd = null;
+    let oldLineStart = null, oldLineEnd = null;
+    fileDiff.querySelectorAll('.diff-line-row').forEach(row => {{
+        const lidx = parseInt(row.dataset.lidx);
+        if (lidx < startIdx || lidx > endIdx) return;
+        const nl = row.dataset.newLine ? parseInt(row.dataset.newLine) : null;
+        const ol = row.dataset.oldLine ? parseInt(row.dataset.oldLine) : null;
+        if (nl !== null) {{
+            if (newLineStart === null || nl < newLineStart) newLineStart = nl;
+            if (newLineEnd === null || nl > newLineEnd) newLineEnd = nl;
+        }}
+        if (ol !== null) {{
+            if (oldLineStart === null || ol < oldLineStart) oldLineStart = ol;
+            if (oldLineEnd === null || ol > oldLineEnd) oldLineEnd = ol;
+        }}
+    }});
+    return {{newLineStart, newLineEnd, oldLineStart, oldLineEnd}};
+}}
+
+function icKeyFromCoordinates(phase, file, coordinates) {{
+    return JSON.stringify([
+        phase, file,
+        coordinates.newLineStart, coordinates.newLineEnd,
+        coordinates.oldLineStart, coordinates.oldLineEnd
+    ]);
+}}
+
+function icKey(phase, file, startIdx, endIdx, fileDiff) {{
+    return icKeyFromCoordinates(
+        phase, file, selectedCoordinates(fileDiff, startIdx, endIdx)
+    );
 }}
 
 // Format a real line reference from inline comment data
@@ -3280,7 +3936,7 @@ function showInlineCommentForm(phase, file, startIdx, endIdx, fileBlock) {{
 
     if (!lastSelectedRow) return;
 
-    const key = icKey(phase, file, startIdx, endIdx);
+    const key = icKey(phase, file, startIdx, endIdx, fileDiff);
     const existing = inlineComments[key];
 
     const form = document.createElement('div');
@@ -3469,14 +4125,42 @@ function getInlineCommentsByPhase(phaseNum) {{
 
 function loadInlineComments(saved) {{
     if (!saved) return;
-    for (const [key, comment] of Object.entries(saved)) {{
-        inlineComments[key] = comment;
-
+    for (const [savedKey, comment] of Object.entries(saved)) {{
         const fileBlock = findFileBlock(comment.phase, comment.file);
-        if (!fileBlock) continue;
+        if (!fileBlock) {{
+            inlineComments[savedKey] = comment;
+            continue;
+        }}
 
         const fileDiff = fileBlock.querySelector('.file-diff');
-        if (!fileDiff) continue;
+        if (!fileDiff) {{
+            inlineComments[savedKey] = comment;
+            continue;
+        }}
+
+        const useNewLines = comment.newLineStart != null;
+        const lineStart = useNewLines ? comment.newLineStart : comment.oldLineStart;
+        const lineEnd = useNewLines ? comment.newLineEnd : comment.oldLineEnd;
+        const matchedRows = [];
+        if (lineStart != null) {{
+            fileDiff.querySelectorAll('.diff-line-row').forEach(row => {{
+                const value = useNewLines ? row.dataset.newLine : row.dataset.oldLine;
+                if (!value) return;
+                const line = parseInt(value);
+                if (line >= lineStart && line <= (lineEnd ?? lineStart)) matchedRows.push(row);
+            }});
+        }}
+
+        if (matchedRows.length > 0) {{
+            comment.startIdx = Math.min(...matchedRows.map(row => parseInt(row.dataset.lidx)));
+            comment.endIdx = Math.max(...matchedRows.map(row => parseInt(row.dataset.lidx)));
+        }}
+        const hasStableCoordinates = comment.newLineStart != null || comment.oldLineStart != null;
+        const key = hasStableCoordinates
+            ? icKeyFromCoordinates(comment.phase, comment.file, comment)
+            : savedKey;
+        inlineComments[key] = comment;
+        if (hasStableCoordinates && matchedRows.length === 0) continue;
 
         let lastRow = null;
         fileDiff.querySelectorAll('.diff-line-row').forEach(row => {{
@@ -3568,14 +4252,24 @@ document.addEventListener('keydown', (e) => {{
         const overlay = document.getElementById('lang-picker-overlay');
         if (overlay && overlay.style.display === 'flex') {{ closeLangPicker(); return; }}
     }}
+    // Tab order: Context → Coverage → Phase 1..N → Summary
+    const onContext = HAS_CONTEXT_TAB &&
+        document.getElementById('context-tab').style.display !== 'none';
+    const onCoverage = HAS_COVERAGE_TAB &&
+        document.getElementById('coverage-tab').style.display !== 'none';
     if (e.key === 'ArrowRight') {{
-        if (HAS_CONTEXT_TAB && document.getElementById('context-tab').style.display !== 'none') goPhase(1);
+        if (onContext) {{ if (HAS_COVERAGE_TAB) showCoverage(); else goPhase(1); }}
+        else if (onCoverage) goPhase(1);
         else if (currentPhase < NUM_PHASES) goPhase(currentPhase + 1);
         else showSummary();
     }}
     if (e.key === 'ArrowLeft') {{
-        if (document.getElementById('summary').style.display !== 'none') goPhase(NUM_PHASES);
+        if (onContext || onCoverage) {{
+            if (onCoverage && HAS_CONTEXT_TAB) showContext();
+        }}
+        else if (document.getElementById('summary').style.display !== 'none') goPhase(NUM_PHASES);
         else if (currentPhase > 1) goPhase(currentPhase - 1);
+        else if (HAS_COVERAGE_TAB) showCoverage();
         else if (HAS_CONTEXT_TAB) showContext();
     }}
 }});
