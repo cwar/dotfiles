@@ -1,4 +1,6 @@
 [Unit]
+# Plasma's panel already has this applet; only useful under bars like niri+waybar.
+ConditionEnvironment=!XDG_CURRENT_DESKTOP=KDE
 Description=Plasma clipboard applet for Klipper without a Plasma panel
 After=graphical-session.target
 PartOf=graphical-session.target
