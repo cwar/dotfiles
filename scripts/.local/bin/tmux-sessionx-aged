@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLUGIN_DIR=${TMUX_SESSIONX_PLUGIN_DIR:-$HOME/.config/tmux/plugins/tmux-sessionx}
+PREVIEW_SCRIPT=$PLUGIN_DIR/scripts/preview.sh
+SELF=$(realpath "${BASH_SOURCE[0]}")
+
+format_age() {
+  local activity=$1
+  local now=$2
+  local delta=$((now - activity))
+
+  if ((delta < 0)); then
+    delta=0
+  fi
+
+  if ((delta < 5)); then
+    printf 'now\n'
+  elif ((delta < 60)); then
+    printf '%ss\n' "$delta"
+  elif ((delta < 3600)); then
+    printf '%sm\n' "$((delta / 60))"
+  elif ((delta < 86400)); then
+    printf '%sh\n' "$((delta / 3600))"
+  else
+    printf '%sd\n' "$((delta / 86400))"
+  fi
+}
+
+selection_target() {
+  printf '%s\n' "${1%%$'\t'*}"
+}
+
+list_sessions() {
+  local now current tab
+  now=$(date +%s)
+  current=$(tmux display-message -p '#S')
+  tab=$'\t'
+
+  tmux list-sessions -F $'#{session_name}\t#{session_activity}\t#{session_attached}' |
+    while IFS=$'\t' read -r name activity attached; do
+      [[ $name == "$current" ]] && continue
+      age=$(format_age "$activity" "$now")
+      if ((attached > 0)); then
+        age="$age · attached"
+      fi
+      printf '%s\t%s\t%s\n' "$name" "$age" "$activity"
+    done |
+    LC_ALL=C sort -t "$tab" -k3,3nr
+}
+
+list_windows() {
+  tmux list-windows -a -F $'#{session_name}:#{window_index} #{window_name}\twindow\t0'
+}
+
+list_directories() {
+  local path
+  path=$(tmux display-message -p '#{pane_current_path}')
+  find -L "$path" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print |
+    while IFS= read -r directory; do
+      printf '%s\tdirectory\t0\n' "$directory"
+    done
+}
+
+list_config_directories() {
+  find -L "$HOME/.config" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print |
+    while IFS= read -r directory; do
+      printf '%s\tconfig\t0\n' "$directory"
+    done
+}
+
+list_zoxide() {
+  zoxide query -l | while IFS= read -r directory; do
+    printf '%s\tzoxide\t0\n' "$directory"
+  done
+}
+
+rename_session() {
+  local target=$1
+  local name
+  printf 'New name: ' >&2
+  IFS= read -r name
+  [[ -n $name ]] || return 0
+  tmux rename-session -t "=$target" "$name"
+}
+
+open_picker() {
+  local result target name tab
+  local -a args
+  tab=$'\t'
+
+  [[ -x $PREVIEW_SCRIPT ]] || {
+    printf 'SessionX preview script not found: %s\n' "$PREVIEW_SCRIPT" >&2
+    return 1
+  }
+
+  args=(
+    "--ansi"
+    "--delimiter=$tab"
+    "--with-nth=1,2"
+    --bind="alt-bspace:execute-silent(tmux kill-session -t ={1})+reload($SELF --list)"
+    --bind="ctrl-r:execute($SELF --rename {1})+reload($SELF --list)"
+    --bind="ctrl-w:reload($SELF --windows)+change-preview($PREVIEW_SCRIPT -w {1})"
+    --bind="ctrl-e:reload($SELF --directories)+change-preview(ls {1})"
+    --bind="ctrl-x:reload($SELF --config-directories)+change-preview(ls {1})"
+    --bind="ctrl-f:reload($SELF --zoxide)+change-preview(ls {1})"
+    --bind="ctrl-b:reload($SELF --list)+change-preview($PREVIEW_SCRIPT {1})"
+    --bind="ctrl-t:change-preview($PREVIEW_SCRIPT -t {1})"
+    --bind='enter:replace-query+print-query'
+    --bind='?:toggle-preview'
+    --bind='change:first'
+    "--exit-0"
+    "--header=enter=switch · alt-bspace=kill · ctrl-r=rename · ctrl-w=windows · ctrl-e=dirs · ctrl-b=back · age=last interaction"
+    "--preview=$PREVIEW_SCRIPT {1}"
+    "--preview-window=top,75%,,"
+    "--layout=default"
+    "--pointer=▶"
+    "--tmux" "75%,75%"
+    "--prompt= "
+    "--print-query"
+    "--tac"
+    "--scrollbar=▌▐"
+    "--border-label=Current session: $(tmux display-message -p '#S')"
+  )
+
+  if ! result=$(list_sessions | fzf "${args[@]}" | tail -n1); then
+    return 0
+  fi
+  target=$(selection_target "$result")
+  [[ -n $target ]] || return 0
+
+  if [[ -d $target ]]; then
+    name=${target##*/}
+    name=${name//./}
+    if ! tmux has-session -t "=$name" 2>/dev/null; then
+      tmux new-session -ds "$name" -c "$target"
+    fi
+    target=$name
+  elif ! tmux has-session -t "$target" 2>/dev/null; then
+    tmux new-session -ds "$target"
+  fi
+
+  tmux switch-client -t "$target"
+}
+
+assert_equal() {
+  local expected=$1
+  local actual=$2
+  local label=$3
+  if [[ $actual != "$expected" ]]; then
+    printf 'FAIL: %s: expected %q, got %q\n' "$label" "$expected" "$actual" >&2
+    return 1
+  fi
+}
+
+self_test() {
+  assert_equal now "$(format_age 100 100)" 'current activity'
+  assert_equal 45s "$(format_age 55 100)" 'seconds'
+  assert_equal 2m "$(format_age 0 120)" 'minutes'
+  assert_equal 3h "$(format_age 0 10800)" 'hours'
+  assert_equal 7d "$(format_age 0 604800)" 'days'
+  assert_equal now "$(format_age 101 100)" 'future timestamp'
+  assert_equal session "$(selection_target $'session\t2h\t100')" 'selection target'
+  printf 'tmux-sessionx-aged self-test passed\n'
+}
+
+case ${1:-} in
+  --list) list_sessions ;;
+  --windows) list_windows ;;
+  --directories) list_directories ;;
+  --config-directories) list_config_directories ;;
+  --zoxide) list_zoxide ;;
+  --rename)
+    [[ $# -eq 2 ]] || exit 2
+    rename_session "$2"
+    ;;
+  --self-test) self_test ;;
+  '') open_picker ;;
+  *)
+    printf 'Usage: %s [--list|--windows|--directories|--config-directories|--zoxide|--rename SESSION|--self-test]\n' "$0" >&2
+    exit 2
+    ;;
+esac

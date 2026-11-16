@@ -14,6 +14,18 @@
 
 set -euo pipefail
 
+# tmux `run-shell` inherits the tmux server's minimal PATH, which lacks mise's
+# tool dirs. Without this, fzf-tmux fails with "fzf executable not found" and
+# the bat-based preview silently falls back to cat. Prepend mise's shims dir
+# (mise's documented fix for non-interactive use).
+if [ -d "$HOME/.local/share/mise/shims" ]; then
+  case ":$PATH:" in
+    *":$HOME/.local/share/mise/shims:"*) ;;
+    *) PATH="$HOME/.local/share/mise/shims:$PATH" ;;
+  esac
+  export PATH
+fi
+
 DEBUG=${TMUX_CMD_PICKER_DEBUG:-0}
 LOGFILE="/tmp/tmux-cmd-picker.log"
 

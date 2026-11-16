@@ -3,6 +3,17 @@
 
 set -euo pipefail
 
+# tmux `run-shell` inherits the tmux server's minimal PATH, which lacks mise's
+# tool dirs. Without this, fzf-tmux fails with "fzf executable not found".
+# Prepend mise's shims dir (mise's documented fix for non-interactive use).
+if [ -d "$HOME/.local/share/mise/shims" ]; then
+  case ":$PATH:" in
+    *":$HOME/.local/share/mise/shims:"*) ;;
+    *) PATH="$HOME/.local/share/mise/shims:$PATH" ;;
+  esac
+  export PATH
+fi
+
 extract_urls() {
   local input_file status
 
@@ -24,40 +35,75 @@ except ValueError:
 
 ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 url_start_re = re.compile(r"(?:https?|ftp|file)://")
-url_pattern = re.compile(r"(?:https?|ftp|file)://[^\s<>\"'\)\]\}│┃|,;]+")
-url_at_end_re = re.compile(r"(?:https?|ftp|file)://[^\s<>\"'\)\]\}│┃|,;]*$")
-continuation_re = re.compile(r"^\s*([A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+)\s*$")
-strong_url_chars_re = re.compile(r"[/?:#@!$&'()*+,;=%._~-]")
+url_pattern = re.compile(r"(?:https?|ftp|file)://[^\s<>\"'\)\]\}│┃|]+")
+continuation_re = re.compile(r"^\s*([A-Za-z0-9._~:/?#\[\]@!$&'(*+,;=%-]+)")
+table_border_re = re.compile(r"[│┃]")
+lines = [ansi_re.sub("", raw_line).rstrip() for raw_line in text.splitlines()]
 
-logical_lines = []
-current = None
 
-for raw_line in text.splitlines():
-    line = ansi_re.sub("", raw_line).rstrip()
+def table_cells(line):
+    if line.lstrip().startswith(("│", "┃")) and len(table_border_re.findall(line)) >= 2:
+        return table_border_re.split(line)
+    return None
 
-    if current and url_at_end_re.search(current):
-        continuation = continuation_re.match(line)
-        if continuation and not url_start_re.search(line):
-            chunk = continuation.group(1)
-            previous_line_was_full = pane_width > 0 and len(current) >= pane_width - 2
-            chunk_looks_urlish = bool(strong_url_chars_re.search(chunk))
-            previous_ends_mid_url_token = current.endswith(("/", "?", "#", "&", "=", "%", ".", "-", "_", "~"))
 
-            if previous_line_was_full or chunk_looks_urlish or previous_ends_mid_url_token:
-                current += chunk
-                continue
+def has_open_delimiter(prefix):
+    return prefix.rfind("(") > prefix.rfind(")") or prefix.rfind("<") > prefix.rfind(">")
 
-    if current is not None:
-        logical_lines.append(current)
-    current = line
-
-if current is not None:
-    logical_lines.append(current)
 
 seen = set()
-for line in logical_lines:
+for line_index, line in enumerate(lines):
+    cells = table_cells(line)
     for match in url_pattern.finditer(line):
-        url = match.group(0).rstrip(".)")
+        url = match.group(0)
+        cell_index = None
+
+        if cells is not None:
+            cell_index = len(table_border_re.findall(line[:match.start()]))
+            prefix = cells[cell_index][:match.start() - sum(len(cell) + 1 for cell in cells[:cell_index])]
+            suffix = cells[cell_index][match.end() - sum(len(cell) + 1 for cell in cells[:cell_index]):]
+        else:
+            prefix = line[:match.start()]
+            suffix = line[match.end():]
+
+        delimiter_open = has_open_delimiter(prefix)
+        explicitly_closed = suffix.lstrip().startswith((")", "]", "}", ">", "|"))
+        previous_row_len = len(line)
+        previous_row_was_full = pane_width > 0 and pane_width - 2 <= previous_row_len <= pane_width
+        next_index = line_index + 1
+
+        if suffix.strip() or explicitly_closed or not (delimiter_open or previous_row_was_full):
+            next_index = len(lines)
+
+        while next_index < len(lines):
+            next_line = lines[next_index]
+            next_cells = table_cells(next_line)
+            if cell_index is not None:
+                if next_cells is None or cell_index >= len(next_cells):
+                    break
+                continuation_text = next_cells[cell_index]
+            else:
+                continuation_text = next_line
+
+            continuation = continuation_re.match(continuation_text)
+            if not continuation:
+                break
+
+            chunk = continuation.group(1)
+            previous_row_was_full = pane_width > 0 and pane_width - 2 <= previous_row_len <= pane_width
+            previous_row_overflowed = pane_width > 0 and previous_row_len > pane_width
+            if url_start_re.match(chunk) or previous_row_overflowed or not (delimiter_open or previous_row_was_full):
+                break
+            if not re.search(r"[A-Za-z0-9./?#%]", chunk):
+                break
+
+            url += chunk
+            previous_row_len = len(next_line)
+            next_index += 1
+            if continuation_text[continuation.end():].strip():
+                break
+
+        url = url.rstrip(".,;:!?)")
         if url and url not in seen:
             seen.add(url)
             print(url)
@@ -67,13 +113,324 @@ PY
   return "$status"
 }
 
+json_string() {
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+kde_browser_focus_script() {
+  local default_browser_desktop default_browser_json focus_token focus_token_json
+
+  default_browser_desktop=${1:-}
+  focus_token=${2:-}
+  default_browser_json=$(json_string "$default_browser_desktop")
+  focus_token_json=$(json_string "$focus_token")
+
+  cat <<JS
+const defaultBrowserDesktop = $default_browser_json;
+const focusToken = $focus_token_json;
+const launchDesktop = workspace.currentDesktop;
+const launchActivity = workspace.currentActivity;
+const browserClasses = [
+  "firefox",
+  "firefoxdeveloperedition",
+  "org.mozilla.firefox",
+  "librewolf",
+  "zen",
+  "google-chrome",
+  "google-chrome-stable",
+  "chromium",
+  "chromium-browser",
+  "brave-browser",
+  "microsoft-edge",
+  "vivaldi-stable",
+  "opera"
+];
+
+function normalized(value) {
+  return String(value || "").toLowerCase();
+}
+
+function desktopStem(value) {
+  return normalized(value).replace(/\.desktop$/, "");
+}
+
+const defaultStem = desktopStem(defaultBrowserDesktop);
+
+function windowIdentifiers(win) {
+  return [normalized(win.resourceClass), normalized(win.resourceName)].filter((value) => value.length > 0);
+}
+
+function status(message) {
+  print("TMUX_URL_PICKER " + focusToken + " " + message);
+}
+
+function desktopProperty(desktop, property) {
+  if (!desktop || desktop[property] === undefined || desktop[property] === null) {
+    return "";
+  }
+
+  return String(desktop[property]);
+}
+
+function sameDesktop(left, right) {
+  if (left === right) {
+    return true;
+  }
+
+  return ["id", "name", "x11DesktopNumber"].some((property) => {
+    const leftValue = desktopProperty(left, property);
+    return leftValue.length > 0 && leftValue === desktopProperty(right, property);
+  });
+}
+
+function windowDesktops(win) {
+  if (win.desktops && win.desktops.length > 0) {
+    return win.desktops;
+  }
+  if (win.desktop) {
+    return [win.desktop];
+  }
+
+  return [];
+}
+
+function isOnLaunchDesktop(win) {
+  if (win.onAllDesktops) {
+    return true;
+  }
+  if (!launchDesktop) {
+    return false;
+  }
+
+  const desktops = windowDesktops(win);
+  if (desktops.length === 0) {
+    return false;
+  }
+
+  return desktops.some((desktop) => sameDesktop(desktop, launchDesktop));
+}
+
+function isOnLaunchActivity(win) {
+  if (!launchActivity || !win.activities || win.activities.length === 0) {
+    return true;
+  }
+
+  return win.activities.indexOf(launchActivity) >= 0;
+}
+
+function matchesKnownBrowser(win) {
+  return windowIdentifiers(win).some((identifier) =>
+    browserClasses.some((browserClass) => identifier === browserClass || identifier.indexOf(browserClass) >= 0)
+  );
+}
+
+function matchesDefaultBrowser(win) {
+  if (!defaultStem) {
+    return false;
+  }
+
+  return windowIdentifiers(win).some((identifier) =>
+    identifier === defaultStem || identifier.indexOf(defaultStem) >= 0 || defaultStem.indexOf(identifier) >= 0
+  );
+}
+
+function candidateScore(win) {
+  let score = 0;
+
+  if (matchesDefaultBrowser(win)) {
+    score += 1000;
+  }
+  if (!win.minimized) {
+    score += 20;
+  }
+
+  return score;
+}
+
+let candidates = workspace.stackingOrder.filter((win) =>
+  (matchesKnownBrowser(win) || matchesDefaultBrowser(win)) && isOnLaunchDesktop(win) && isOnLaunchActivity(win)
+);
+const defaultCandidates = candidates.filter(matchesDefaultBrowser);
+if (defaultCandidates.length > 0) {
+  candidates = defaultCandidates;
+}
+
+let win = null;
+let bestScore = -1;
+for (const candidate of candidates) {
+  const score = candidateScore(candidate);
+  if (score >= bestScore) {
+    bestScore = score;
+    win = candidate;
+  }
+}
+
+if (win) {
+  win.minimized = false;
+  workspace.activeWindow = win;
+  status("focused browser on launch desktop " + win.resourceClass + " " + win.caption);
+} else {
+  status("no browser window found on launch desktop");
+}
+JS
+}
+
+move_pointer_to_focused_window_kde() {
+  if ! command -v qdbus6 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  qdbus6 org.kde.kglobalaccel /component/kwin org.kde.kglobalaccel.Component.invokeShortcut MoveMouseToFocus \
+    >/dev/null 2>&1 || true
+}
+
+focus_browser_window_kde() {
+  local default_browser focused focus_token move_pointer report_status script_id start_time tmp
+
+  if ! command -v qdbus6 >/dev/null 2>&1; then
+    return 1
+  fi
+
+  move_pointer=${1:-true}
+  report_status=${2:-false}
+  focused=0
+  focus_token="tmux-url-picker-$$-$RANDOM"
+  start_time=$(date +%s)
+  default_browser=$(xdg-settings get default-web-browser 2>/dev/null || true)
+  tmp=$(mktemp /tmp/tmux-url-picker-kwin.XXXXXX.js)
+  kde_browser_focus_script "$default_browser" "$focus_token" >"$tmp"
+
+  script_id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$tmp" 2>/dev/null | tail -n 1 || true)
+  if [[ $script_id =~ ^[0-9]+$ ]]; then
+    qdbus6 org.kde.KWin "/Scripting/Script${script_id}" org.kde.kwin.Script.run >/dev/null 2>&1 || true
+    sleep 0.05
+    if [[ $move_pointer == "true" ]]; then
+      move_pointer_to_focused_window_kde
+    fi
+    sleep 0.15
+    qdbus6 org.kde.KWin "/Scripting/Script${script_id}" org.kde.kwin.Script.stop >/dev/null 2>&1 || true
+  fi
+
+  if [[ $report_status != "true" ]]; then
+    focused=1
+  elif command -v journalctl >/dev/null 2>&1 && journalctl --user -b --since "@$start_time" --no-pager 2>/dev/null | grep -F "TMUX_URL_PICKER $focus_token focused browser" >/dev/null; then
+    focused=1
+  fi
+
+  rm -f "$tmp"
+
+  if [[ $focused == 1 ]]; then
+    return 0
+  fi
+  return 1
+}
+
+prepare_browser_window_for_open() {
+  case ${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-} in
+    *KDE*)
+      focus_browser_window_kde false true
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+focus_browser_window() {
+  local delay
+
+  case ${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-} in
+    *KDE*)
+      delay=${TMUX_URL_PICKER_FOCUS_DELAY:-0.35}
+      sleep "$delay" 2>/dev/null || true
+      focus_browser_window_kde true false || true
+      ;;
+  esac
+}
+
+browser_stem() {
+  local desktop_id
+
+  desktop_id=$1
+  desktop_id=${desktop_id%.desktop}
+  printf '%s' "$desktop_id" | tr '[:upper:]' '[:lower:]'
+}
+
+run_browser_command() {
+  local browser_cmd mode url
+
+  browser_cmd=$1
+  mode=$2
+  url=$3
+
+  if ! command -v "$browser_cmd" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if [[ $mode == "window" ]]; then
+    "$browser_cmd" --new-window "$url" >/dev/null 2>&1 &
+  else
+    "$browser_cmd" --new-tab "$url" >/dev/null 2>&1 &
+  fi
+}
+
+open_with_browser_commands() {
+  local browser_cmd mode url
+
+  mode=$1
+  url=$2
+  shift 2
+
+  for browser_cmd in "$@"; do
+    if run_browser_command "$browser_cmd" "$mode" "$url"; then
+      return 0
+    fi
+  done
+
+  xdg-open "$url" &>/dev/null &
+}
+
+open_url_in_browser() {
+  local default_browser mode stem url
+
+  url=$1
+  mode=${2:-tab}
+  default_browser=$(xdg-settings get default-web-browser 2>/dev/null || true)
+  stem=$(browser_stem "$default_browser")
+
+  case $stem in
+    google-chrome | google-chrome-stable)
+      open_with_browser_commands "$mode" "$url" google-chrome google-chrome-stable
+      ;;
+    chromium | chromium-browser)
+      open_with_browser_commands "$mode" "$url" chromium chromium-browser
+      ;;
+    brave-browser | brave-browser-stable)
+      open_with_browser_commands "$mode" "$url" brave-browser
+      ;;
+    firefox | firefox-esr | org.mozilla.firefox)
+      open_with_browser_commands "$mode" "$url" firefox
+      ;;
+    microsoft-edge | microsoft-edge-stable)
+      open_with_browser_commands "$mode" "$url" microsoft-edge microsoft-edge-stable
+      ;;
+    vivaldi | vivaldi-stable)
+      open_with_browser_commands "$mode" "$url" vivaldi vivaldi-stable
+      ;;
+    *)
+      xdg-open "$url" &>/dev/null &
+      ;;
+  esac
+}
+
 assert_extract() {
-  local name input expected actual
+  local name input expected width actual
 
   name=$1
   input=$2
   expected=$3
-  actual=$(printf '%s' "$input" | TMUX_URL_PICKER_WIDTH=72 extract_urls)
+  width=${4:-72}
+  actual=$(printf '%s' "$input" | TMUX_URL_PICKER_WIDTH="$width" extract_urls)
 
   if [[ "$actual" != "$expected" ]]; then
     printf 'not ok - %s\n' "$name" >&2
@@ -85,8 +442,40 @@ assert_extract() {
   printf 'ok - %s\n' "$name"
 }
 
+assert_contains() {
+  local name haystack needle
+
+  name=$1
+  haystack=$2
+  needle=$3
+
+  if [[ $haystack != *"$needle"* ]]; then
+    printf 'not ok - %s\n' "$name" >&2
+    printf 'missing substring:\n%s\n' "$needle" >&2
+    return 1
+  fi
+
+  printf 'ok - %s\n' "$name"
+}
+
+assert_not_contains() {
+  local name haystack needle
+
+  name=$1
+  haystack=$2
+  needle=$3
+
+  if [[ $haystack == *"$needle"* ]]; then
+    printf 'not ok - %s\n' "$name" >&2
+    printf 'unexpected substring:\n%s\n' "$needle" >&2
+    return 1
+  fi
+
+  printf 'ok - %s\n' "$name"
+}
+
 run_self_tests() {
-  local failures input expected
+  local failures input expected opener_func pointer_func script
 
   failures=0
 
@@ -102,7 +491,7 @@ ethod=S256&state=QIEzqZb0jmxGNPE7tggOMmRlZk4aUrxhzwLeEICEOPo
 EOF
   )
   expected=$(printf '%s' "$input" | tr -d '\n')
-  assert_extract "joins wrapped oauth URL" "$input" "$expected" || failures=$((failures + 1))
+  assert_extract "joins wrapped oauth URL" "$input" "$expected" 65 || failures=$((failures + 1))
 
   input=$(
     cat <<'EOF'
@@ -112,6 +501,31 @@ EOF
   )
   expected="https://example.com/login"
   assert_extract "does not join ordinary following text" "$input" "$expected" || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+Document from: https://example.slack.com/archives/C00000000/p1700000000.000000
+user1: Hello
+Document from: https://example.com/#post-recovery-drift
+Post-Recovery Drift
+EOF
+  )
+  expected=$(
+    cat <<'EOF'
+https://example.slack.com/archives/C00000000/p1700000000.000000
+https://example.com/#post-recovery-drift
+EOF
+  )
+  assert_extract "does not append document titles or authors" "$input" "$expected" 167 || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+Use [Grafana](https://example.com/#grafana-dashboards) to monitor
+of operators
+EOF
+  )
+  expected='https://example.com/#grafana-dashboards'
+  assert_extract "stops at an inline Markdown delimiter" "$input" "$expected" 72 || failures=$((failures + 1))
 
   input=$(
     cat <<'EOF'
@@ -127,6 +541,83 @@ https://example.com/b
 EOF
   )
   assert_extract "deduplicates and trims trailing punctuation" "$input" "$expected" || failures=$((failures + 1))
+
+  input='https://verify.proton.me/?methods=ownership-email,ownership-sms&token=1grPFtm'
+  expected="$input"
+  assert_extract "keeps commas inside a query string" "$input" "$expected" || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+next/token
+EOF
+  )
+  expected='https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  assert_extract "does not extend a -J rejoined row" "$input" "$expected" || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+│ (https://github.com/apache/druid/blob/master/multi-stage-query/src/main/java/ │ publication, task locks             │
+│ org/apache/druid/msq/exec/ControllerImpl.java)                                │ complete-set publication            │
+EOF
+  )
+  expected='https://github.com/apache/druid/blob/master/multi-stage-query/src/main/java/org/apache/druid/msq/exec/ControllerImpl.java'
+  assert_extract "joins a URL across table cells" "$input" "$expected" 147 || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+│ (https://left.example/base/ │ right text                     │
+│ left/path)                  │ (https://right.example/ja      │
+│ next row                    │ va/path)                        │
+EOF
+  )
+  expected=$(
+    cat <<'EOF'
+https://left.example/base/left/path
+https://right.example/java/path
+EOF
+  )
+  assert_extract "keeps table continuations in their columns" "$input" "$expected" 64 || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+ (https://git.example.net/example/monorepo-alpha/blob/935b557c5d4108c077f46a3686d67fb3bd994412/acmeproj/acmeproj-proxy-service/src/main/java/com/example/acmeprojclien
+ tv2/proxy/monitoring/RequestMonitorInterceptor.java#L141-L147) runs after queryTimer is assigned but before sendMessage() checks closedStatus
+EOF
+  )
+  expected='https://git.example.net/example/monorepo-alpha/blob/935b557c5d4108c077f46a3686d67fb3bd994412/acmeproj/acmeproj-proxy-service/src/main/java/com/example/acmeprojclientv2/proxy/monitoring/RequestMonitorInterceptor.java#L141-L147'
+  assert_extract "joins a URL followed by prose" "$input" "$expected" 167 || failures=$((failures + 1))
+
+  input=$(
+    cat <<'EOF'
+  (https://git.example.net/acmeproj/druid-ingestion-library/blob/master/src/main/java/com/example/druidingestionlibrary/DruidClient.java#L101-L12
+  0)
+EOF
+  )
+  expected='https://git.example.net/acmeproj/druid-ingestion-library/blob/master/src/main/java/com/example/druidingestionlibrary/DruidClient.java#L101-L120'
+  assert_extract "joins a trailing line-range digit" "$input" "$expected" 147 || failures=$((failures + 1))
+
+  script=$(kde_browser_focus_script "firefox.desktop")
+  assert_contains "KDE focus script prefers default browser" "$script" "firefox.desktop" || failures=$((failures + 1))
+  assert_contains "KDE focus script matches Firefox" "$script" "org.mozilla.firefox" || failures=$((failures + 1))
+  assert_contains "KDE focus script matches Chrome" "$script" "google-chrome" || failures=$((failures + 1))
+  assert_contains "KDE focus script reports status token" "$script" "focusToken" || failures=$((failures + 1))
+  assert_contains "KDE focus script captures launch desktop" "$script" "const launchDesktop = workspace.currentDesktop" || failures=$((failures + 1))
+  assert_contains "KDE focus script filters to launch desktop" "$script" "isOnLaunchDesktop(win)" || failures=$((failures + 1))
+  assert_contains "KDE focus script activates the browser" "$script" "workspace.activeWindow = win" || failures=$((failures + 1))
+  assert_not_contains "KDE focus script never switches desktops" "$script" "workspace.currentDesktop =" || failures=$((failures + 1))
+  assert_not_contains "KDE focus script never switches activities" "$script" "workspace.currentActivity =" || failures=$((failures + 1))
+
+  pointer_func=$(declare -f move_pointer_to_focused_window_kde || true)
+  assert_contains "KDE pointer move uses KWin shortcut" "$pointer_func" "MoveMouseToFocus" || failures=$((failures + 1))
+
+  opener_func=$(
+    declare -f run_browser_command
+    declare -f open_with_browser_commands
+    declare -f open_url_in_browser
+  )
+  assert_contains "browser opener can force new windows" "$opener_func" "--new-window" || failures=$((failures + 1))
+  assert_contains "browser opener can request tabs" "$opener_func" "--new-tab" || failures=$((failures + 1))
 
   if ((failures > 0)); then
     return 1
@@ -175,9 +666,22 @@ if [ "$KEY" = "ctrl-y" ]; then
   echo -n "$CHOSEN" | wl-copy
   tmux display-message "📋 Copied to clipboard"
 else
-  # Open each selected URL
+  # Make the browser window on this KDE desktop active first, when one exists.
+  # If no same-desktop browser is found, force the first URL into a new browser
+  # window instead of letting browser remoting activate a window on another desktop.
+  OPEN_MODE=tab
+  if ! prepare_browser_window_for_open; then
+    OPEN_MODE=window
+  fi
+
+  # Open each selected URL. When we had to create a new browser window, only the
+  # first URL needs --new-window; subsequent URLs can become tabs in that window.
   while IFS= read -r url; do
-    xdg-open "$url" &>/dev/null &
+    open_url_in_browser "$url" "$OPEN_MODE"
+    if [[ $OPEN_MODE == "window" ]]; then
+      OPEN_MODE=tab
+      sleep 0.25
+    fi
   done <<<"$CHOSEN"
   COUNT=$(echo "$CHOSEN" | wc -l)
   if [ "$COUNT" -eq 1 ]; then
@@ -185,4 +689,5 @@ else
   else
     tmux display-message "🌐 Opened $COUNT URLs"
   fi
+  focus_browser_window
 fi

@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# pi-focus-stuck — focus or attach to the tmux pane that owns a Pi process.
+# Usage: pi-focus-stuck [--dry-run] <pi-pid>
+
+usage() {
+  cat <<'EOF'
+Usage: pi-focus-stuck [--dry-run] <pi-pid>
+
+Find the tmux pane whose shell owns <pi-pid>. If that tmux session is attached,
+select the pane and focus a matching Ghostty window under KDE/KWin. If detached,
+open a new Ghostty window attached to that tmux session.
+EOF
+}
+
+log() {
+  printf 'pi-focus-stuck: %s\n' "$*" >&2
+}
+
+run() {
+  if [[ $dry_run == true ]]; then
+    printf '+ '
+    printf '%q ' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+json_string() {
+  /usr/bin/python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+pid_alive() {
+  local pid=$1
+  [[ -r /proc/$pid/stat ]]
+}
+
+ancestor_pids() {
+  local pid=$1
+  local parent
+
+  while [[ $pid =~ ^[0-9]+$ && $pid -gt 1 ]]; do
+    printf '%s\n' "$pid"
+    parent=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]') || break
+    [[ -n $parent && $parent =~ ^[0-9]+$ ]] || break
+    pid=$parent
+  done
+}
+
+queue_agent_manager_request() {
+  local pid=$1
+  local job_id owner_pid ancestor env_file request_dir tmp
+
+  env_file=/proc/$pid/environ
+  [[ -r $env_file ]] || return 0
+  job_id=$(tr '\0' '\n' <"$env_file" | awk -F= '$1 == "AGENTS_JOB_ID" { print $2; exit }')
+  [[ -n $job_id ]] || return 0
+
+  owner_pid=""
+  while IFS= read -r ancestor; do
+    [[ $ancestor != "$pid" && -r /proc/$ancestor/comm && -r /proc/$ancestor/environ ]] || continue
+    [[ $(<"/proc/$ancestor/comm") == pi ]] || continue
+    if ! tr '\0' '\n' <"/proc/$ancestor/environ" | grep -q '^AGENTS_RUNNER=1$'; then
+      owner_pid=$ancestor
+      break
+    fi
+  done < <(ancestor_pids "$pid")
+  [[ -n $owner_pid ]] || return 0
+  if [[ $dry_run == true ]]; then
+    printf '+ queue agent manager request for Pi PID %q selecting %q\n' "$owner_pid" "$job_id"
+    return 0
+  fi
+
+  request_dir=${XDG_CACHE_HOME:-$HOME/.cache}/pi-agents/open-requests
+  mkdir -p -- "$request_dir"
+  tmp=$(mktemp "$request_dir/.${owner_pid}.XXXXXX")
+  /usr/bin/python3 -c 'import json, sys; print(json.dumps({"selectedId": sys.argv[1]}))' "$job_id" >"$tmp"
+  mv -f -- "$tmp" "$request_dir/$owner_pid.json"
+  log "queued agent manager request for Pi PID $owner_pid selecting $job_id"
+}
+
+find_tmux_pane_for_pid() {
+  local pid=$1
+  local ancestors_file
+  ancestors_file=$(mktemp)
+  trap 'rm -f "$ancestors_file"' RETURN
+
+  ancestor_pids "$pid" >"$ancestors_file"
+
+  tmux list-panes -a -F '#{pane_id}	#{session_name}	#{window_index}	#{pane_index}	#{pane_pid}	#{pane_current_path}' |
+    while IFS=$'\t' read -r pane_id session window_index pane_index pane_pid pane_path; do
+      if grep -qx -- "$pane_pid" "$ancestors_file"; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$pane_id" "$session" "$window_index" "$pane_index" "$pane_pid" "$pane_path"
+        break
+      fi
+    done
+}
+
+focus_ghostty_for_project() {
+  local project=$1
+  local tmp script_id project_json
+
+  if ! command -v qdbus6 >/dev/null 2>&1; then
+    log "qdbus6 not found; cannot ask KWin to focus Ghostty"
+    return 0
+  fi
+
+  tmp=$(mktemp /tmp/pi-focus-kwin.XXXXXX.js)
+  project_json=$(json_string "$project")
+
+  cat >"$tmp" <<JS
+const project = $project_json;
+const exactCaption = "π - " + project;
+let candidates = workspace.stackingOrder.filter((w) =>
+  w.resourceClass === "com.mitchellh.ghostty" &&
+  (w.caption === exactCaption || (project && String(w.caption).indexOf(project) >= 0))
+);
+if (candidates.length === 0) {
+  candidates = workspace.stackingOrder.filter((w) => w.resourceClass === "com.mitchellh.ghostty");
+}
+const win = candidates.length > 0 ? candidates[candidates.length - 1] : null;
+if (win) {
+  if (win.activities && win.activities.length > 0 && workspace.currentActivity !== win.activities[0]) {
+    workspace.currentActivity = win.activities[0];
+  }
+  if (win.desktops && win.desktops.length > 0) {
+    workspace.currentDesktop = win.desktops[0];
+  }
+  win.minimized = false;
+  workspace.activeWindow = win;
+  print("PI_FOCUS_STUCK focused " + win.caption);
+} else {
+  print("PI_FOCUS_STUCK no Ghostty window found");
+}
+JS
+
+  if [[ $dry_run == true ]]; then
+    printf '+ qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript %q\n' "$tmp"
+    printf '+ qdbus6 org.kde.KWin /Scripting/Script<N> org.kde.kwin.Script.run\n'
+    rm -f "$tmp"
+    return 0
+  fi
+
+  script_id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$tmp" 2>/dev/null | tail -n 1 || true)
+  if [[ $script_id =~ ^[0-9]+$ ]]; then
+    qdbus6 org.kde.KWin "/Scripting/Script${script_id}" org.kde.kwin.Script.run >/dev/null 2>&1 || true
+    sleep 0.2
+    qdbus6 org.kde.KWin "/Scripting/Script${script_id}" org.kde.kwin.Script.stop >/dev/null 2>&1 || true
+  else
+    log "failed to load KWin focus script"
+  fi
+  rm -f "$tmp"
+}
+
+open_detached_session() {
+  local session=$1
+
+  if ! command -v ghostty >/dev/null 2>&1; then
+    log "ghostty not found; cannot open detached tmux session $session"
+    return 1
+  fi
+
+  if [[ $dry_run == true ]]; then
+    printf '+ setsid ghostty -e bash -lc %q bash %q\n' 'exec tmux attach-session -t "$1"' "$session"
+  else
+    setsid ghostty -e bash -lc 'exec tmux attach-session -t "$1"' bash "$session" >/dev/null 2>&1 </dev/null &
+  fi
+}
+
+dry_run=false
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+  usage
+  exit 0
+fi
+if [[ ${1:-} == --dry-run ]]; then
+  dry_run=true
+  shift
+fi
+
+pid=${1:-}
+if [[ -z $pid || ! $pid =~ ^[0-9]+$ ]]; then
+  usage >&2
+  exit 2
+fi
+
+if ! pid_alive "$pid"; then
+  log "PID $pid is not alive"
+  exit 1
+fi
+
+if ! command -v tmux >/dev/null 2>&1; then
+  log "tmux not found"
+  exit 1
+fi
+
+pane_info=$(find_tmux_pane_for_pid "$pid")
+if [[ -z $pane_info ]]; then
+  log "could not find a tmux pane owning PID $pid"
+  exit 1
+fi
+
+IFS=$'\t' read -r pane_id session window_index pane_index _pane_pid pane_path <<<"$pane_info"
+target_window=${session}:${window_index}
+target_pane=${session}:${window_index}.${pane_index}
+project=${pane_path##*/}
+
+log "PID $pid maps to tmux pane $pane_id ($target_pane) in project $project"
+queue_agent_manager_request "$pid"
+
+run tmux select-window -t "$target_window"
+run tmux select-pane -t "$pane_id"
+
+client_ttys=$(tmux list-clients -t "$session" -F '#{client_tty}' 2>/dev/null || true)
+if [[ -n $client_ttys ]]; then
+  while IFS= read -r client_tty; do
+    [[ -n $client_tty ]] || continue
+    run tmux switch-client -c "$client_tty" -t "$session"
+  done <<<"$client_ttys"
+  focus_ghostty_for_project "$project"
+else
+  log "tmux session $session is detached; opening a new Ghostty attached to it"
+  open_detached_session "$session"
+fi
