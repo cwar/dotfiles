@@ -60,17 +60,55 @@ export default function stuckDetector(pi: ExtensionAPI) {
     alerted = false;
   }
 
-  function sendDesktopNotification(title: string, body: string, urgency: "low" | "normal" | "critical" = "critical") {
-    execFile("notify-send", [
-      "--urgency", urgency,
-      "--app-name", "pi",
-      "--icon", "dialog-warning",
-      "--expire-time", "0", // persist until dismissed
-      title,
-      body,
-    ], (err) => {
-      if (err) { /* silent — notification daemon might not be running */ }
-    });
+  function sendDesktopNotification(
+    title: string,
+    body: string,
+    urgency: "low" | "normal" | "critical" = "critical",
+    openPid?: number,
+  ) {
+    const fallbackNotifySend = () => {
+      execFile("notify-send", [
+        "--urgency", urgency,
+        "--app-name", "pi",
+        "--icon", "dialog-warning",
+        "--expire-time", urgency === "critical" ? "0" : "8000",
+        title,
+        body,
+      ], (err) => {
+        if (err) { /* silent — notification daemon might not be running */ }
+      });
+    };
+
+    // Dunst supports actions through dunstify. Ubuntu's notify-send reports actions
+    // as unsupported here even though Dunst advertises them, so use dunstify for
+    // clickable stuck alerts and keep notify-send as the non-action fallback.
+    if (openPid) {
+      execFile("dunstify", [
+        "--appname", "pi",
+        "--urgency", urgency,
+        "--icon", "dialog-warning",
+        "--timeout", urgency === "critical" ? "0" : "8000",
+        "--hints", `string:x-dunst-stack-tag:pi-stuck-${openPid}`,
+        "--action", "open,Open",
+        "--block",
+        title,
+        body,
+      ], (err, stdout) => {
+        const code = (err as { code?: string } | null)?.code;
+        if (code === "ENOENT") {
+          fallbackNotifySend();
+          return;
+        }
+
+        const action = stdout.trim();
+        if (action === "open" || action === "default") {
+          execFile("pi-focus-stuck", [String(openPid)], () => {});
+        }
+      });
+      return;
+    }
+
+    fallbackNotifySend();
   }
 
   function playSound() {
@@ -125,9 +163,14 @@ export default function stuckDetector(pi: ExtensionAPI) {
     // Desktop notification (with cooldown)
     if (!alerted || (lastNotifyTime && (now - lastNotifyTime) >= REMINDER_INTERVAL_MS)) {
       const proj = projectLabel || "unknown project";
+      const clickTarget = process.env.AGENTS_JOB_ID
+        ? "Click to open Agent View with this session selected."
+        : "Click to open this Pi session.";
       sendDesktopNotification(
         `🔴 pi session stuck (${proj})`,
-        `Idle for ${idleStr}${toolInfo}\nRunning for ${elapsed} total`,
+        `Idle for ${idleStr}${toolInfo}\nRunning for ${elapsed} total\n\n${clickTarget}`,
+        "critical",
+        process.pid,
       );
       playSound();
       lastNotifyTime = now;
@@ -232,7 +275,9 @@ export default function stuckDetector(pi: ExtensionAPI) {
         writeStateFile(true);
         sendDesktopNotification(
           `🔴 pi session stuck (${projectLabel || "test"})`,
-          "This is a test notification.\nIdle for 5m (last tool: bash)",
+          "This is a test notification.\nIdle for 5m (last tool: bash)\n\nClick to open this Pi session.",
+          "critical",
+          process.pid,
         );
         playSound();
         // Clear stuck state after a longer delay so click handler works

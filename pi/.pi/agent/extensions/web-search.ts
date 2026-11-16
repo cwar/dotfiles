@@ -3,106 +3,44 @@
  *
  * Two tools:
  *
- * 1. `web_search` — Uses Anthropic's native web search beta via claude-haiku-4-5
- *    (cheap/fast) to search the internet. No third-party API key needed beyond
- *    your existing Anthropic key. Credit: bsmithgall/pi-pi-pi
+ * 1. `web_search` — Uses the conversation's selected model and that provider's
+ *    native web-search capability. Authentication comes from pi's model registry,
+ *    so search never silently switches to a different provider or model.
  *
  * 2. `fetch_content` — Fetches a URL and returns readable content. Uses Jina
  *    Reader (r.jina.ai) for HTML→markdown conversion with a raw fetch fallback.
  *    No API key required. Blocks local/private network addresses for safety.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { complete, type UserMessage } from "@earendil-works/pi-ai/compat";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { addNativeWebSearchTool, extractAssistantText } from "./web-search/core.ts";
 
 // ─── Web Search ──────────────────────────────────────────────────────────────
 
-const SEARCH_MODEL_ID = "claude-haiku-4-5";
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const MAX_SEARCH_USES = 5;
 const SEARCH_MAX_TOKENS = 2048;
+const SEARCH_SYSTEM_PROMPT =
+  "You are a concise web research assistant. Use native web search and return a focused summary with key findings and full source URLs. Be brief and direct.";
 
-type SearchResult = { ok: true; text: string } | { ok: false; error: string };
+function withAnthropicSearchBeta(
+  api: string,
+  headers: Record<string, string | null> | undefined,
+): Record<string, string | null> | undefined {
+  if (api !== "anthropic-messages") return headers;
 
-async function runWebSearch(
-  query: string,
-  apiKey: string,
-  signal?: AbortSignal,
-): Promise<SearchResult> {
-  const isOAuth = apiKey.includes("sk-ant-oat");
+  const existing = headers?.["anthropic-beta"];
+  const betaValues = new Set(
+    ["web-search-2025-03-05", ...(typeof existing === "string" ? existing.split(",") : [])]
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
 
-  const headers: Record<string, string> = isOAuth
-    ? {
-        authorization: `Bearer ${apiKey}`,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "web-search-2025-03-05,oauth-2025-04-20",
-        "content-type": "application/json",
-        "x-app": "cli",
-        "user-agent": "claude-cli/1.0.72 (external, cli)",
-      }
-    : {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "web-search-2025-03-05",
-        "content-type": "application/json",
-      };
-
-  const body = {
-    model: SEARCH_MODEL_ID,
-    max_tokens: SEARCH_MAX_TOKENS,
-    temperature: 0,
-    system:
-      "You are a concise web research assistant. Search the web and return a focused summary with key findings and full source URLs. Be brief and direct.",
-    tools: [
-      {
-        type: "web_search_20250305",
-        name: "web_search",
-        max_uses: MAX_SEARCH_USES,
-      },
-    ],
-    messages: [{ role: "user", content: query }],
+  return {
+    ...headers,
+    "anthropic-beta": [...betaValues].join(","),
   };
-
-  let res: Response;
-  try {
-    res = await fetch(ANTHROPIC_API_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: `Network error: ${msg}` };
-  }
-
-  const raw = await res.text();
-
-  if (!res.ok) {
-    return { ok: false, error: `Anthropic API error (${res.status}): ${raw.slice(0, 300)}` };
-  }
-
-  let parsed: { content?: Array<{ type: string; text?: string }> };
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false, error: "Failed to parse Anthropic response as JSON" };
-  }
-
-  const text = (parsed.content ?? [])
-    .filter(
-      (b): b is { type: "text"; text: string } => b.type === "text" && typeof b.text === "string",
-    )
-    .map((b) => b.text)
-    .join("\n\n")
-    .trim();
-
-  if (!text) {
-    return { ok: false, error: "Anthropic returned no text content" };
-  }
-
-  return { ok: true, text };
 }
 
 // ─── Fetch Content ───────────────────────────────────────────────────────────
@@ -229,8 +167,9 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
     name: "web_search",
     label: "Web Search",
     description:
-      `Search the internet for current information. Uses Anthropic's native web search ` +
-      `via ${SEARCH_MODEL_ID}. Returns a concise summary with source URLs. ` +
+      `Search the internet for current information using the conversation's selected model ` +
+      `and its provider-native web search. Returns a concise summary with source URLs. ` +
+      `Fails explicitly if the selected model API has no native-search adapter. ` +
       `Use when you need up-to-date facts, documentation, news, or anything not in your training data.`,
     parameters: Type.Object({
       query: Type.String({
@@ -239,50 +178,54 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
     }),
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const model = ctx.modelRegistry.find("anthropic", SEARCH_MODEL_ID);
+      const model = ctx.model;
       if (!model) {
-        return {
-          content: [{ type: "text", text: `Error: model ${SEARCH_MODEL_ID} not found in registry` }],
-          details: { query: params.query, error: "model not found" },
-          isError: true,
-        };
+        throw new Error("Cannot search the web because no conversation model is selected");
       }
 
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) {
-        return {
-          content: [{ type: "text", text: `Error: ${auth.error}` }],
-          details: { query: params.query, error: auth.error },
-          isError: true,
-        };
-      }
-      const apiKey = auth.apiKey;
-      if (!apiKey) {
-        return {
-          content: [{ type: "text", text: `Error: no API key available for ${SEARCH_MODEL_ID}` }],
-          details: { query: params.query, error: "no api key" },
-          isError: true,
-        };
+      if (!auth.ok || !auth.apiKey) {
+        throw new Error(auth.ok ? `No API key available for ${model.provider}/${model.id}` : auth.error);
       }
 
+      const modelName = `${model.provider}/${model.id}`;
       onUpdate?.({
-        content: [{ type: "text", text: `Searching: ${params.query}` }],
-        details: { query: params.query, status: "searching" },
+        content: [{ type: "text", text: `Searching with ${modelName}: ${params.query}` }],
+        details: { query: params.query, model: modelName, status: "searching" },
       });
 
-      const result = await runWebSearch(params.query, apiKey, signal);
+      const userMessage: UserMessage = {
+        role: "user",
+        content: [{ type: "text", text: params.query }],
+        timestamp: Date.now(),
+      };
 
-      if (!result.ok) {
-        return {
-          content: [{ type: "text", text: `Search failed: ${result.error}` }],
-          details: { query: params.query, error: result.error },
-          isError: true,
-        };
+      const response = await complete(
+        model,
+        {
+          systemPrompt: SEARCH_SYSTEM_PROMPT,
+          messages: [userMessage],
+        },
+        {
+          apiKey: auth.apiKey,
+          headers: withAnthropicSearchBeta(model.api, auth.headers),
+          env: auth.env,
+          maxTokens: SEARCH_MAX_TOKENS,
+          signal,
+          onPayload(payload, requestModel) {
+            return addNativeWebSearchTool(payload, requestModel.api);
+          },
+        },
+      );
+
+      if (response.stopReason === "error" || response.stopReason === "aborted") {
+        throw new Error(response.errorMessage ?? `Web search ${response.stopReason}`);
       }
 
+      const text = extractAssistantText(response);
       return {
-        content: [{ type: "text", text: result.text }],
-        details: { query: params.query, result: result.text },
+        content: [{ type: "text", text }],
+        details: { query: params.query, model: modelName, result: text },
       };
     },
 

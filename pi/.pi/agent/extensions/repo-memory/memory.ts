@@ -12,6 +12,35 @@ export interface Insight {
   updatedAt: number;
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function normalizeTimestamp(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeInsight(value: unknown): Insight | null {
+  if (!value || typeof value !== "object") return null;
+
+  const raw = value as Partial<Insight>;
+  if (typeof raw.topic !== "string" || typeof raw.content !== "string") {
+    return null;
+  }
+
+  const now = Date.now();
+  return {
+    id: typeof raw.id === "string" ? raw.id : randomUUID().slice(0, 8),
+    topic: raw.topic,
+    content: raw.content,
+    relatedFiles: normalizeStringArray(raw.relatedFiles),
+    tags: normalizeStringArray(raw.tags),
+    createdAt: normalizeTimestamp(raw.createdAt, now),
+    updatedAt: normalizeTimestamp(raw.updatedAt, now),
+  };
+}
+
 // ── Architecture Decision Record ──────────────────────────
 
 export const ADR_SECTIONS = [
@@ -201,7 +230,16 @@ export class Memory {
     try {
       if (fs.existsSync(this.filePath)) {
         const data = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
-        this.insights = data.insights ?? [];
+        const rawInsights = Array.isArray(data.insights) ? data.insights : [];
+        this.insights = rawInsights
+          .map(normalizeInsight)
+          .filter((insight): insight is Insight => insight !== null);
+
+        // Repair older/corrupt memory files once loaded so future sessions do not
+        // repeatedly encounter missing optional-array fields.
+        if (JSON.stringify(this.insights) !== JSON.stringify(rawInsights)) {
+          this.save();
+        }
       }
     } catch {
       this.insights = [];
@@ -227,8 +265,8 @@ export class Memory {
       id: randomUUID().slice(0, 8),
       topic,
       content,
-      relatedFiles,
-      tags,
+      relatedFiles: normalizeStringArray(relatedFiles),
+      tags: normalizeStringArray(tags),
       createdAt: now,
       updatedAt: now,
     };
@@ -243,7 +281,15 @@ export class Memory {
   ): Insight | null {
     const insight = this.insights.find((i) => i.id === id);
     if (!insight) return null;
-    Object.assign(insight, updates, { updatedAt: Date.now() });
+    if (updates.topic !== undefined) insight.topic = updates.topic;
+    if (updates.content !== undefined) insight.content = updates.content;
+    if (updates.relatedFiles !== undefined) {
+      insight.relatedFiles = normalizeStringArray(updates.relatedFiles);
+    }
+    if (updates.tags !== undefined) {
+      insight.tags = normalizeStringArray(updates.tags);
+    }
+    insight.updatedAt = Date.now();
     this.save();
     return insight;
   }
@@ -271,9 +317,13 @@ export class Memory {
         let score = 0;
         for (const term of terms) {
           if (insight.topic.toLowerCase().includes(term)) score += 3;
-          if (insight.tags.some((t) => t.toLowerCase().includes(term))) score += 2;
+          if (normalizeStringArray(insight.tags).some((t) => t.toLowerCase().includes(term))) {
+            score += 2;
+          }
           if (insight.content.toLowerCase().includes(term)) score += 1;
-          if (insight.relatedFiles.some((f) => f.toLowerCase().includes(term))) score += 1;
+          if (normalizeStringArray(insight.relatedFiles).some((f) => f.toLowerCase().includes(term))) {
+            score += 1;
+          }
         }
         return { insight, score };
       })

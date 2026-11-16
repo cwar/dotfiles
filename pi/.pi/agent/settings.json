@@ -7,12 +7,25 @@
     "~/.claude/plugins/marketplaces/claude-plugins-official/plugins/playground/skills"
   ],
   "enableSkillCommands": true,
-  "lastChangelogVersion": "0.79.1",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "high",
-  "hideThinkingBlock": false,
+  "lastChangelogVersion": "1.5.2",
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-opus-5-5",
+  "defaultThinkingLevel": "medium",
+  "hideThinkingBlock": true,
   "quietStartup": true,
-  "packages": [],
-  "theme": "dark"
+  "packages": [
+    "../../src/tries/2026-08-20-chirp-stealing"
+  ],
+  "httpIdleTimeoutMs": 30000,
+  "retry": {
+    "maxRetries": 6,
+    "baseDelayMs": 2000
+  },
+  "prompts": [
+    "/home/cwar/my-vault/.claude/commands"
+  ],
+  "theme": "dark",
+  "terminal": {
+    "showTerminalProgress": true
+  }
 }

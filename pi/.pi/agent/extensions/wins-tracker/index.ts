@@ -22,7 +22,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { readFile, appendFile, mkdir, writeFile, readdir, stat, open as fsOpen } from "node:fs/promises";
+import { readFile, appendFile, mkdir, writeFile, readdir, stat } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -31,7 +31,9 @@ import { randomUUID } from "node:crypto";
 
 const WINS_DIR = join(homedir(), ".pi", "wins");
 const WINS_FILE = join(WINS_DIR, "wins.jsonl");
+const ANALYZED_SESSIONS_FILE = join(WINS_DIR, "analyzed-sessions.jsonl");
 const CUSTOM_TYPE = "wins-tracker";
+const BACKFILL_WIDGET_KEY = "wins-tracker:backfill-progress";
 
 /** Max time to wait for the analysis API call before giving up. */
 const ANALYSIS_TIMEOUT_MS = 15_000;
@@ -65,6 +67,23 @@ interface DetectedWin {
 	summary: string;
 	category: string;
 	impact: string;
+}
+
+interface AnalyzedSessionRecord {
+	sessionId: string;
+	analyzedAt: string;
+	sessionTimestamp: string;
+	project: string;
+	cwd: string;
+	winCount: number;
+	status: "completed";
+}
+
+interface SessionAnalysisMeta {
+	sessionId: string;
+	timestamp?: string;
+	project?: string;
+	cwd?: string;
 }
 
 // ── Helpers: Text Extraction ───────────────────────────────────────
@@ -130,6 +149,13 @@ function extractConversation(entries: any[]): string {
 	return parts.join("\n\n");
 }
 
+/** Extract the stable session UUID from pi's timestamp-prefixed session filenames. */
+function sessionIdFromFilePath(sessionFile: string): string {
+	const fileBase = basename(sessionFile, ".jsonl");
+	const uuidIdx = fileBase.indexOf("_");
+	return uuidIdx >= 0 ? fileBase.slice(uuidIdx + 1) : fileBase;
+}
+
 // ── Helpers: Win Storage ───────────────────────────────────────────
 
 async function ensureDir(): Promise<void> {
@@ -153,9 +179,60 @@ async function readAllWins(): Promise<Win[]> {
 	}
 }
 
+async function appendAnalyzedSession(record: AnalyzedSessionRecord): Promise<void> {
+	await ensureDir();
+	await appendFile(ANALYZED_SESSIONS_FILE, JSON.stringify(record) + "\n", "utf8");
+}
+
+async function readAnalyzedSessions(): Promise<AnalyzedSessionRecord[]> {
+	try {
+		const content = await readFile(ANALYZED_SESSIONS_FILE, "utf8");
+		const records: AnalyzedSessionRecord[] = [];
+		for (const line of content.split("\n")) {
+			if (!line.trim()) continue;
+			try {
+				const parsed = JSON.parse(line);
+				if (parsed?.sessionId && parsed.status === "completed") {
+					records.push(parsed);
+				}
+			} catch {
+				// Ignore malformed marker lines instead of losing the whole ledger.
+			}
+		}
+		return records;
+	} catch {
+		return [];
+	}
+}
+
+async function markSessionAnalyzed(meta: SessionAnalysisMeta, winCount: number): Promise<void> {
+	await appendAnalyzedSession({
+		sessionId: meta.sessionId,
+		analyzedAt: new Date().toISOString(),
+		sessionTimestamp: meta.timestamp || "",
+		project: meta.project || "unknown",
+		cwd: meta.cwd || "",
+		winCount,
+		status: "completed",
+	});
+}
+
+/** Get all session IDs already known to have completed analysis. */
+async function getAnalyzedSessionIds(): Promise<Set<string>> {
+	const [wins, analyzedSessions] = await Promise.all([readAllWins(), readAnalyzedSessions()]);
+	const ids = new Set<string>();
+	for (const win of wins) {
+		if (win.sessionId) ids.add(win.sessionId);
+	}
+	for (const record of analyzedSessions) {
+		ids.add(record.sessionId);
+	}
+	return ids;
+}
+
 async function sessionAlreadyAnalyzed(sessionId: string): Promise<boolean> {
-	const wins = await readAllWins();
-	return wins.some((w) => w.sessionId === sessionId);
+	const analyzed = await getAnalyzedSessionIds();
+	return analyzed.has(sessionId);
 }
 
 // ── Helpers: Session Discovery (for backfill) ─────────────────────
@@ -225,12 +302,6 @@ async function discoverSessionFiles(): Promise<string[]> {
 		// sessions dir might not exist
 	}
 	return paths;
-}
-
-/** Get all session IDs already in the wins log. */
-async function getAnalyzedSessionIds(): Promise<Set<string>> {
-	const wins = await readAllWins();
-	return new Set(wins.map((w) => w.sessionId));
 }
 
 // ── Helpers: Claude API Call ───────────────────────────────────────
@@ -586,6 +657,22 @@ function generateReport(wins: Win[], title?: string): string {
 	return lines.join("\n");
 }
 
+function formatBackfillProgress(current: number, total: number, project: string, totalWins: number, errors: number): string {
+	const failed = errors > 0 ? ` · ${errors} failed` : "";
+	return `🏆 Wins backfill ${current}/${total} · ${totalWins} wins${failed} · ${project}`;
+}
+
+function setBackfillProgress(ctx: any, current: number, total: number, project: string, totalWins: number, errors: number): void {
+	const progress = formatBackfillProgress(current, total, project, totalWins, errors);
+	ctx.ui.setStatus(CUSTOM_TYPE, progress);
+	ctx.ui.setWidget?.(BACKFILL_WIDGET_KEY, [progress], { placement: "belowEditor" });
+}
+
+function clearBackfillProgress(ctx: any): void {
+	ctx.ui.setStatus(CUSTOM_TYPE, undefined);
+	ctx.ui.setWidget?.(BACKFILL_WIDGET_KEY, undefined, { placement: "belowEditor" });
+}
+
 // ── Extension ──────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -598,9 +685,7 @@ export default function (pi: ExtensionAPI) {
 			// We want just the UUID to match the header ID used by backfill.
 			const sessionFile = ctx.sessionManager.getSessionFile?.();
 			if (!sessionFile) return;
-			const fileBase = basename(sessionFile, ".jsonl");
-			const uuidIdx = fileBase.indexOf("_");
-			const sessionId = uuidIdx >= 0 ? fileBase.slice(uuidIdx + 1) : fileBase;
+			const sessionId = sessionIdFromFilePath(sessionFile);
 			if (!sessionId) return;
 
 			// Don't re-analyze the same session
@@ -655,6 +740,11 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				if (ctx.hasUI) ctx.ui.setStatus(CUSTOM_TYPE, undefined);
 			}
+
+			await markSessionAnalyzed(
+				{ sessionId, timestamp: new Date().toISOString(), project, cwd: ctx.cwd },
+				detected.length,
+			);
 		} catch {
 			// Never block exit — silently move on
 			try {
@@ -760,13 +850,14 @@ export default function (pi: ExtensionAPI) {
 				const baseUrl = process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
 
 				// Discover all sessions and filter to unanalyzed ones
-				ctx.ui.setStatus(CUSTOM_TYPE, "🔍 Scanning sessions...");
+				ctx.ui.setStatus(CUSTOM_TYPE, "🔍 Wins backfill: scanning...");
+				ctx.ui.setWidget?.(BACKFILL_WIDGET_KEY, ["🔍 Wins backfill: scanning sessions..."], { placement: "belowEditor" });
 				const sessionPaths = await discoverSessionFiles();
 				const alreadyDone = await getAnalyzedSessionIds();
 
 				// Also exclude the current session
 				const currentFile = ctx.sessionManager.getSessionFile?.();
-				const currentId = currentFile ? basename(currentFile, ".jsonl") : undefined;
+				const currentId = currentFile ? sessionIdFromFilePath(currentFile) : undefined;
 
 				// Parse all sessions and filter
 				const candidates: { meta: SessionFile; entries: any[] }[] = [];
@@ -788,7 +879,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				if (candidates.length === 0) {
-					ctx.ui.setStatus(CUSTOM_TYPE, undefined);
+					clearBackfillProgress(ctx);
 					ctx.ui.notify("All sessions have already been analyzed. Nothing to backfill!", "info");
 					return;
 				}
@@ -802,7 +893,7 @@ export default function (pi: ExtensionAPI) {
 						`This will call Claude Haiku for each one (~$${(candidates.length * 0.001).toFixed(2)} estimated). Continue?`,
 				);
 				if (!ok) {
-					ctx.ui.setStatus(CUSTOM_TYPE, undefined);
+					clearBackfillProgress(ctx);
 					return;
 				}
 
@@ -813,10 +904,7 @@ export default function (pi: ExtensionAPI) {
 
 				for (const { meta, entries } of candidates) {
 					analyzed++;
-					ctx.ui.setStatus(
-						CUSTOM_TYPE,
-						`📝 Analyzing session ${analyzed}/${candidates.length} (${meta.project}, ${totalWins} wins so far)...`,
-					);
+					setBackfillProgress(ctx, analyzed, candidates.length, meta.project, totalWins, errors);
 
 					try {
 						const conversation = extractConversation(entries);
@@ -839,6 +927,8 @@ export default function (pi: ExtensionAPI) {
 							}
 							totalWins += detected.length;
 						}
+
+						await markSessionAnalyzed(meta, detected.length);
 					} catch (e: any) {
 						errors++;
 						if (!firstError) {
@@ -852,7 +942,7 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 
-				ctx.ui.setStatus(CUSTOM_TYPE, undefined);
+				clearBackfillProgress(ctx);
 				if (errors > 0 && totalWins === 0) {
 					// All failures — show the actual error so user can debug
 					ctx.ui.notify(
@@ -860,7 +950,7 @@ export default function (pi: ExtensionAPI) {
 						"error",
 					);
 				} else {
-					const errMsg = errors > 0 ? ` (${errors} failed)` : "";
+					const errMsg = errors > 0 ? ` (${errors} failed; will retry next run)` : "";
 					ctx.ui.notify(
 						`🏆 Backfill complete! Found ${totalWins} win${totalWins !== 1 ? "s" : ""} across ${analyzed} sessions${errMsg}.`,
 						totalWins > 0 ? "info" : "warning",
@@ -871,11 +961,17 @@ export default function (pi: ExtensionAPI) {
 
 			// ── /wins clear ────────────────────────────────────────
 			if (trimmed === "clear") {
-				const ok = await ctx.ui.confirm("Clear all wins?", "This permanently deletes all recorded accomplishments.");
+				const ok = await ctx.ui.confirm(
+					"Clear all wins?",
+					"This permanently deletes all recorded accomplishments and resets backfill analysis history.",
+				);
 				if (ok) {
 					await ensureDir();
-					await writeFile(WINS_FILE, "", "utf8");
-					ctx.ui.notify("🗑️ All wins cleared.", "info");
+					await Promise.all([
+						writeFile(WINS_FILE, "", "utf8"),
+						writeFile(ANALYZED_SESSIONS_FILE, "", "utf8"),
+					]);
+					ctx.ui.notify("🗑️ All wins and analysis history cleared.", "info");
 				}
 				return;
 			}
