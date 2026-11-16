@@ -18,3 +18,4 @@ pi/.pi/agent/mcp.json.bak
 # OS
 .DS_Store
 *.bak.*
+tmux/.config/tmux/plugins/
