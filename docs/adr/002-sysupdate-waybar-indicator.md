@@ -54,8 +54,13 @@ Two stow-tracked scripts in the `scripts` package
 - **`sysupdate-launch`** — Waybar `on-click`. Re-execs itself inside Ghostty
   (guarded by `SYSUPDATE_IN_TERM`), shows the pending summary, `gum confirm`s,
   primes sudo once, then upgrades each present manager in isolation (one failure
-  does not abort the rest), and finally signals Waybar (`pkill -RTMIN+8`) so the
-  indicator re-checks immediately.
+  does not abort the rest). It also fetches `origin/master` for an explicit
+  allowlist of checkouts (read from the untracked `~/.config/sysupdate/git-repos`) and
+  safely fast-forwards each local `master`: a clean checked-out `master` is
+  advanced in place; when another branch is checked out, only the local
+  `master` ref is advanced. Dirty, divergent, or separately checked-out
+  `master` branches are fetched but otherwise left untouched. Finally, it
+  signals Waybar (`pkill -RTMIN+8`) so the indicator re-checks immediately.
 
 Waybar wiring follows ADR-001: the `custom/sysupdate` module is defined **once
 in `common.jsonc`** (with its CSS in `common.css`) and referenced from each
@@ -68,8 +73,8 @@ Positive:
 - Single source of truth: one module def + CSS, inherited by both bars.
 - The indicator and updater are environment-agnostic — Hyprland gets the same
   bar entry for free when that session is used.
-- `--self-test` keeps the counting/JSON logic verifiable without a framework;
-  scripts are shellcheck- and shfmt-clean.
+- `--self-test` keeps the counting/JSON and Git fast-forward safety logic
+  verifiable without a framework; scripts are shellcheck- and shfmt-clean.
 
 Negative / risks:
 
@@ -87,6 +92,10 @@ Negative / risks:
   This is correct (a newer version genuinely exists), just not auto-clearable.
 - Detection commands assume these specific managers; adding/removing a manager
   means editing the `ORDER`/`count_*` set in `sysupdate-check`.
+- Git updates require network/VPN access to the remote. A fetch failure is reported as
+  an isolated step failure and does not prevent other updates. Repository
+  targets are intentionally explicit rather than discovered automatically, so
+  adding another monorepo requires extending `GIT_UPDATE_REPOS`.
 
 ## Follow-up
 

@@ -147,12 +147,29 @@ count_brew() {
   timed_count env HOMEBREW_NO_AUTO_UPDATE=1 brew outdated --quiet
 }
 
-# count_npm: globally-installed npm packages with a newer version.
-# NB: `npm outdated` exits 1 when it finds anything, which is why timed_count
-# ignores tool exit status.
+# npm_count_outdated_json: count entries in `npm outdated --json` whose current
+# differs from wanted after stripping a leading v/=. Some tarballs (fleetctl)
+# ship "v4.94.0"; npm outdated string-compares it as stale but npm update -g
+# treats it as current, so the indicator could never clear.
+npm_count_outdated_json() {
+  jq '[.[] | (if type == "array" then .[] else . end)
+       | select(((.current // "") | sub("^[v=]+"; ""))
+             != ((.wanted // "") | sub("^[v=]+"; "")))] | length' 2>/dev/null || printf '0\n'
+}
+
+# count_npm: globally-installed npm packages that `npm update -g` would change.
+# NB: `npm outdated` exits 1 when it finds anything, so only a timeout is ERR.
 count_npm() {
   command -v npm >/dev/null 2>&1 || return 0
-  timed_count npm outdated -g --parseable
+  local out rc
+  out=$(timeout "$SYSUPDATE_TIMEOUT" npm outdated -g --json 2>/dev/null)
+  rc=$?
+  if ((rc == 124 || rc == 137)); then
+    printf '%s\n' "$ERR_SENTINEL"
+    return 0
+  fi
+  [[ -n $out ]] || out='{}'
+  printf '%s\n' "$out" | npm_count_outdated_json
 }
 
 # count_mise: tools mise can upgrade.
@@ -327,6 +344,12 @@ FAKEBREW
   PATH=$_brew_saved_path
   rm -rf "$_brewdir"
   check "count_brew suppresses brew auto-update" "$_brew_got" "3"
+
+  check "npm json ignores leading-v version mismatch" \
+    "$(printf '%s' '{"fleetctl":{"current":"v4.94.0","wanted":"4.94.0","latest":"4.94.0"}}' | npm_count_outdated_json)" "0"
+  check "npm json counts real updates" \
+    "$(printf '%s' '{"a":{"current":"1.0.0","wanted":"1.1.0"},"b":{"current":"2.0.0","wanted":"2.0.0"}}' | npm_count_outdated_json)" "1"
+  check "npm json empty object is 0" "$(printf '{}' | npm_count_outdated_json)" "0"
 
   # prepend_mise_shims(): prepends the shims dir to PATH when it exists, and is
   # idempotent (a second call must not add it twice).
