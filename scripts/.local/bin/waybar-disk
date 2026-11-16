@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# waybar-disk PATH LABEL — Waybar JSON for a mount's usage, with warning/critical classes.
+set -euo pipefail
+path=$1 label=$2
+read -r pct used size < <(df -h --output=pcent,used,size "$path" | awk 'NR==2 {print $1+0, $2, $3}')
+class=""
+((pct >= 75)) && class=warning
+((pct >= 90)) && class=critical
+printf '{"text":"󰋊 %s %d%%","tooltip":"%s: %s / %s","class":"%s"}\n' "$label" "$pct" "$label" "$used" "$size" "$class"

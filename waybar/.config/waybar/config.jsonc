@@ -6,7 +6,7 @@
 
   "modules-left": ["ext/workspaces"],
   "modules-center": ["custom/sysupdate", "clock"],
-  "modules-right": ["disk", "disk#extra", "network", "wireplumber", "custom/dualsense", "battery", "tray"],
+  "modules-right": ["disk", "custom/disk-extra", "network", "wireplumber", "custom/dualsense", "battery", "tray"],
 
   // ext-workspace-v1 protocol instead of hyprland/workspaces: waybar's
   // hyprland module hardcodes the legacy IPC string "dispatch workspace N",
@@ -36,6 +36,7 @@
   },
 
   "custom/dualsense": {
+    "exec-if": "test -x ~/.local/bin/dualsense-battery",
     "exec": "~/.local/bin/dualsense-battery",
     "return-type": "json",
     "interval": 30
@@ -52,15 +53,12 @@
     }
   },
 
-  "disk#extra": {
-    "path": "/mnt/extradrive1",
-    "format": "󰋊 ex {percentage_used}%",
-    "tooltip-format": "Extra: {used} / {total}",
-    "interval": 30,
-    "states": {
-      "warning": 75,
-      "critical": 90
-    }
+  // custom so exec-if can hide it on machines without the drive (disk has no exec-if).
+  "custom/disk-extra": {
+    "exec-if": "mountpoint -q /mnt/extradrive1",
+    "exec": "~/.local/bin/waybar-disk /mnt/extradrive1 ex",
+    "return-type": "json",
+    "interval": 30
   },
 
   "wireplumber": {
