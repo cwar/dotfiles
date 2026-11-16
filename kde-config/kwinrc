@@ -18,6 +18,7 @@ Rows=2
 krohnkiteEnabled=true
 
 [Script-krohnkite]
+movePointerOnFocus=true
 screenGapBetween=8
 screenGapBottom=8
 screenGapLeft=8

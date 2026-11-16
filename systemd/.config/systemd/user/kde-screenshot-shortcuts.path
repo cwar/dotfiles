@@ -1,0 +1,11 @@
+[Unit]
+Description=Re-ensure KDE screenshot shortcuts when KGlobalAccel rewrites config
+Documentation=man:systemd.path(5)
+PartOf=graphical-session.target
+
+[Path]
+PathChanged=%h/.config/kglobalshortcutsrc
+Unit=kde-screenshot-shortcuts.service
+
+[Install]
+WantedBy=graphical-session.target

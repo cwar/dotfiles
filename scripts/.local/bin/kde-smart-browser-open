@@ -1,0 +1,438 @@
+#!/usr/bin/env bash
+# Open web links in the browser window on the current KDE desktop.
+# If no same-desktop browser exists, create a new browser window here instead
+# of letting browser remoting reuse a window on another virtual desktop.
+
+set -euo pipefail
+
+APP_DESKTOP_ID="kde-smart-browser.desktop"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kde-smart-browser"
+TARGET_FILE="$CONFIG_DIR/target-browser.desktop"
+
+json_string() {
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+browser_stem() {
+  local desktop_id
+
+  desktop_id=$1
+  desktop_id=${desktop_id%.desktop}
+  printf '%s' "$desktop_id" | tr '[:upper:]' '[:lower:]'
+}
+
+target_browser_desktop() {
+  local current target
+
+  if [[ -n ${KDE_SMART_BROWSER_TARGET:-} ]]; then
+    printf '%s\n' "$KDE_SMART_BROWSER_TARGET"
+    return 0
+  fi
+
+  if [[ -r $TARGET_FILE ]]; then
+    IFS= read -r target <"$TARGET_FILE" || target=""
+    if [[ -n $target ]]; then
+      printf '%s\n' "$target"
+      return 0
+    fi
+  fi
+
+  current=$(xdg-settings get default-web-browser 2>/dev/null || true)
+  if [[ -n $current && $current != "$APP_DESKTOP_ID" ]]; then
+    printf '%s\n' "$current"
+    return 0
+  fi
+
+  printf '%s\n' "google-chrome.desktop"
+}
+
+kde_browser_focus_script() {
+  local focus_token focus_token_json target_desktop target_json
+
+  target_desktop=${1:-}
+  focus_token=${2:-}
+  target_json=$(json_string "$target_desktop")
+  focus_token_json=$(json_string "$focus_token")
+
+  cat <<JS
+const targetBrowserDesktop = $target_json;
+const focusToken = $focus_token_json;
+const launchDesktop = workspace.currentDesktop;
+const launchActivity = workspace.currentActivity;
+const browserClasses = [
+  "firefox",
+  "firefoxdeveloperedition",
+  "org.mozilla.firefox",
+  "librewolf",
+  "zen",
+  "google-chrome",
+  "google-chrome-stable",
+  "chromium",
+  "chromium-browser",
+  "brave-browser",
+  "microsoft-edge",
+  "vivaldi-stable",
+  "opera"
+];
+
+function normalized(value) {
+  return String(value || "").toLowerCase();
+}
+
+function desktopStem(value) {
+  return normalized(value).replace(/\.desktop$/, "");
+}
+
+const targetStem = desktopStem(targetBrowserDesktop);
+
+function status(message) {
+  print("KDE_SMART_BROWSER " + focusToken + " " + message);
+}
+
+function windowIdentifiers(win) {
+  return [normalized(win.resourceClass), normalized(win.resourceName)].filter((value) => value.length > 0);
+}
+
+function desktopProperty(desktop, property) {
+  if (!desktop || desktop[property] === undefined || desktop[property] === null) {
+    return "";
+  }
+
+  return String(desktop[property]);
+}
+
+function sameDesktop(left, right) {
+  if (left === right) {
+    return true;
+  }
+
+  return ["id", "name", "x11DesktopNumber"].some((property) => {
+    const leftValue = desktopProperty(left, property);
+    return leftValue.length > 0 && leftValue === desktopProperty(right, property);
+  });
+}
+
+function windowDesktops(win) {
+  if (win.desktops && win.desktops.length > 0) {
+    return win.desktops;
+  }
+  if (win.desktop) {
+    return [win.desktop];
+  }
+
+  return [];
+}
+
+function isOnLaunchDesktop(win) {
+  if (win.onAllDesktops) {
+    return true;
+  }
+  if (!launchDesktop) {
+    return false;
+  }
+
+  const desktops = windowDesktops(win);
+  if (desktops.length === 0) {
+    return false;
+  }
+
+  return desktops.some((desktop) => sameDesktop(desktop, launchDesktop));
+}
+
+function isOnLaunchActivity(win) {
+  if (!launchActivity || !win.activities || win.activities.length === 0) {
+    return true;
+  }
+
+  return win.activities.indexOf(launchActivity) >= 0;
+}
+
+function matchesKnownBrowser(win) {
+  return windowIdentifiers(win).some((identifier) =>
+    browserClasses.some((browserClass) => identifier === browserClass || identifier.indexOf(browserClass) >= 0)
+  );
+}
+
+function matchesTargetBrowser(win) {
+  if (!targetStem) {
+    return false;
+  }
+
+  return windowIdentifiers(win).some((identifier) =>
+    identifier === targetStem || identifier.indexOf(targetStem) >= 0 || targetStem.indexOf(identifier) >= 0
+  );
+}
+
+function candidateScore(win) {
+  let score = 0;
+
+  if (matchesTargetBrowser(win)) {
+    score += 1000;
+  }
+  if (!win.minimized) {
+    score += 20;
+  }
+
+  return score;
+}
+
+let candidates = workspace.stackingOrder.filter((win) =>
+  (matchesKnownBrowser(win) || matchesTargetBrowser(win)) && isOnLaunchDesktop(win) && isOnLaunchActivity(win)
+);
+const targetCandidates = candidates.filter(matchesTargetBrowser);
+if (targetCandidates.length > 0) {
+  candidates = targetCandidates;
+}
+
+let win = null;
+let bestScore = -1;
+for (const candidate of candidates) {
+  const score = candidateScore(candidate);
+  if (score >= bestScore) {
+    bestScore = score;
+    win = candidate;
+  }
+}
+
+if (win) {
+  win.minimized = false;
+  workspace.activeWindow = win;
+  status("focused browser on launch desktop " + win.resourceClass + " " + win.caption);
+} else {
+  status("no browser window found on launch desktop");
+}
+JS
+}
+
+move_pointer_to_focused_window_kde() {
+  if ! command -v qdbus6 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  qdbus6 org.kde.kglobalaccel /component/kwin org.kde.kglobalaccel.Component.invokeShortcut MoveMouseToFocus \
+    >/dev/null 2>&1 || true
+}
+
+focus_browser_window_kde() {
+  local focus_token focused move_pointer report_status script_id start_time target_desktop tmp
+
+  if ! command -v qdbus6 >/dev/null 2>&1; then
+    return 1
+  fi
+
+  target_desktop=$1
+  move_pointer=${2:-true}
+  report_status=${3:-false}
+  focused=0
+  focus_token="kde-smart-browser-$$-$RANDOM"
+  start_time=$(date +%s)
+  tmp=$(mktemp /tmp/kde-smart-browser.XXXXXX.js)
+  kde_browser_focus_script "$target_desktop" "$focus_token" >"$tmp"
+
+  script_id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$tmp" 2>/dev/null | tail -n 1 || true)
+  if [[ $script_id =~ ^[0-9]+$ ]]; then
+    qdbus6 org.kde.KWin "/Scripting/Script${script_id}" org.kde.kwin.Script.run >/dev/null 2>&1 || true
+    sleep 0.05
+    if [[ $move_pointer == "true" ]]; then
+      move_pointer_to_focused_window_kde
+    fi
+    sleep 0.15
+    qdbus6 org.kde.KWin "/Scripting/Script${script_id}" org.kde.kwin.Script.stop >/dev/null 2>&1 || true
+  fi
+
+  if [[ $report_status != "true" ]]; then
+    focused=1
+  elif command -v journalctl >/dev/null 2>&1 && journalctl --user -b --since "@$start_time" --no-pager 2>/dev/null | grep -F "KDE_SMART_BROWSER $focus_token focused browser" >/dev/null; then
+    focused=1
+  fi
+
+  rm -f "$tmp"
+
+  if [[ $focused == 1 ]]; then
+    return 0
+  fi
+  return 1
+}
+
+prepare_browser_window_for_open() {
+  local target_desktop
+
+  target_desktop=$1
+  case ${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-} in
+    *KDE*)
+      focus_browser_window_kde "$target_desktop" false true
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+focus_browser_window_after_open() {
+  local delay target_desktop
+
+  target_desktop=$1
+  case ${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-} in
+    *KDE*)
+      delay=${KDE_SMART_BROWSER_FOCUS_DELAY:-0.35}
+      sleep "$delay" 2>/dev/null || true
+      focus_browser_window_kde "$target_desktop" true false || true
+      ;;
+  esac
+}
+
+run_browser_command() {
+  local browser_cmd mode url
+
+  browser_cmd=$1
+  mode=$2
+  url=$3
+
+  if ! command -v "$browser_cmd" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if [[ $mode == "window" ]]; then
+    "$browser_cmd" --new-window "$url" >/dev/null 2>&1 &
+  else
+    "$browser_cmd" --new-tab "$url" >/dev/null 2>&1 &
+  fi
+}
+
+open_with_browser_commands() {
+  local browser_cmd mode url
+
+  mode=$1
+  url=$2
+  shift 2
+
+  for browser_cmd in "$@"; do
+    if run_browser_command "$browser_cmd" "$mode" "$url"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+open_url_in_browser() {
+  local mode stem target_desktop url
+
+  target_desktop=$1
+  url=$2
+  mode=${3:-tab}
+  stem=$(browser_stem "$target_desktop")
+
+  case $stem in
+    google-chrome | google-chrome-stable)
+      open_with_browser_commands "$mode" "$url" google-chrome google-chrome-stable
+      ;;
+    chromium | chromium-browser)
+      open_with_browser_commands "$mode" "$url" chromium chromium-browser
+      ;;
+    brave-browser | brave-browser-stable)
+      open_with_browser_commands "$mode" "$url" brave-browser
+      ;;
+    firefox | firefox-esr | org.mozilla.firefox)
+      open_with_browser_commands "$mode" "$url" firefox
+      ;;
+    microsoft-edge | microsoft-edge-stable)
+      open_with_browser_commands "$mode" "$url" microsoft-edge microsoft-edge-stable
+      ;;
+    vivaldi | vivaldi-stable)
+      open_with_browser_commands "$mode" "$url" vivaldi vivaldi-stable
+      ;;
+    *)
+      if command -v gtk-launch >/dev/null 2>&1; then
+        gtk-launch "$target_desktop" "$url" >/dev/null 2>&1 &
+      else
+        return 1
+      fi
+      ;;
+  esac
+}
+
+assert_contains() {
+  local name haystack needle
+
+  name=$1
+  haystack=$2
+  needle=$3
+
+  if [[ $haystack != *"$needle"* ]]; then
+    printf 'not ok - %s\n' "$name" >&2
+    printf 'missing substring:\n%s\n' "$needle" >&2
+    return 1
+  fi
+
+  printf 'ok - %s\n' "$name"
+}
+
+assert_not_contains() {
+  local name haystack needle
+
+  name=$1
+  haystack=$2
+  needle=$3
+
+  if [[ $haystack == *"$needle"* ]]; then
+    printf 'not ok - %s\n' "$name" >&2
+    printf 'unexpected substring:\n%s\n' "$needle" >&2
+    return 1
+  fi
+
+  printf 'ok - %s\n' "$name"
+}
+
+run_self_tests() {
+  local failures opener_func script
+
+  failures=0
+  script=$(kde_browser_focus_script "google-chrome.desktop" "test-token")
+
+  assert_contains "KWin script captures launch desktop" "$script" "const launchDesktop = workspace.currentDesktop" || failures=$((failures + 1))
+  assert_contains "KWin script filters to launch desktop" "$script" "isOnLaunchDesktop(win)" || failures=$((failures + 1))
+  assert_contains "KWin script uses status token" "$script" "KDE_SMART_BROWSER" || failures=$((failures + 1))
+  assert_contains "KWin script activates browser" "$script" "workspace.activeWindow = win" || failures=$((failures + 1))
+  assert_not_contains "KWin script never switches desktops" "$script" "workspace.currentDesktop =" || failures=$((failures + 1))
+  assert_not_contains "KWin script never switches activities" "$script" "workspace.currentActivity =" || failures=$((failures + 1))
+
+  opener_func=$(
+    declare -f run_browser_command
+    declare -f open_with_browser_commands
+    declare -f open_url_in_browser
+  )
+  assert_contains "browser opener can force new windows" "$opener_func" "--new-window" || failures=$((failures + 1))
+  assert_contains "browser opener can request tabs" "$opener_func" "--new-tab" || failures=$((failures + 1))
+  assert_contains "target selection avoids wrapper recursion" "$(KDE_SMART_BROWSER_TARGET=firefox.desktop target_browser_desktop)" "firefox.desktop" || failures=$((failures + 1))
+
+  if ((failures > 0)); then
+    return 1
+  fi
+}
+
+if [[ ${1:-} == "--self-test" ]]; then
+  run_self_tests
+  exit $?
+fi
+
+if (($# == 0)); then
+  open_url_in_browser "$(target_browser_desktop)" "about:blank" "window" || exit 1
+  exit 0
+fi
+
+TARGET_DESKTOP=$(target_browser_desktop)
+OPEN_MODE=tab
+if ! prepare_browser_window_for_open "$TARGET_DESKTOP"; then
+  OPEN_MODE=window
+fi
+
+for url in "$@"; do
+  open_url_in_browser "$TARGET_DESKTOP" "$url" "$OPEN_MODE" || exit 1
+  if [[ $OPEN_MODE == "window" ]]; then
+    OPEN_MODE=tab
+    sleep 0.25
+  fi
+done
+
+focus_browser_window_after_open "$TARGET_DESKTOP"

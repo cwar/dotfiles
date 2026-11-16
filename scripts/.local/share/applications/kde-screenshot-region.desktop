@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Screenshot Region
+Comment=Drag a region, copy the screenshot to clipboard, and save it
+Exec=/home/cwar/.local/bin/kde-screenshot region
+Icon=org.kde.spectacle
+Terminal=false
+StartupNotify=false
+X-KDE-GlobalAccel-CommandShortcut=true
+Categories=Utility;

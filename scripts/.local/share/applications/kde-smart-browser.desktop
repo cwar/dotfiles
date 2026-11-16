@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Smart Browser (KDE)
+Comment=Open web links in a browser window on the current KDE desktop
+Exec=/home/cwar/.local/bin/kde-smart-browser-open %U
+Icon=google-chrome
+Terminal=false
+NoDisplay=true
+Categories=Network;WebBrowser;
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=false

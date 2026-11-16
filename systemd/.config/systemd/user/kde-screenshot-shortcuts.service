@@ -1,0 +1,13 @@
+[Unit]
+Description=Ensure KDE screenshot shortcuts use the clipboard-first wrapper
+Documentation=man:gdbus(1)
+After=graphical-session.target plasma-clipboard-windowed.service
+Wants=plasma-clipboard-windowed.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/cwar/.local/bin/kde-screenshot-shortcuts-ensure
+
+[Install]
+WantedBy=graphical-session.target

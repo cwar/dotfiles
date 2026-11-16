@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Clipboard-first screenshot helper for KDE Plasma/Spectacle.
+# Usage: kde-screenshot window|region|fullscreen|gui|open-last|edit-last
+
+mode=${1:-region}
+
+screenshot_dir=${XDG_SCREENSHOTS_DIR:-$HOME/Pictures/Screenshots}
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/kde-screenshot
+last_file=$state_dir/last
+
+mkdir -p -- "$screenshot_dir" "$state_dir"
+
+notify_error() {
+  notify-send \
+    --app-name="Screenshot" \
+    --urgency=normal \
+    --icon=dialog-error \
+    "Screenshot failed" \
+    "$1" || true
+}
+
+latest_screenshot() {
+  if [[ -s $last_file ]]; then
+    local last
+    last=$(<"$last_file")
+    if [[ -f $last ]]; then
+      printf '%s\n' "$last"
+      return 0
+    fi
+  fi
+
+  local latest
+  latest=$(find "$screenshot_dir" -maxdepth 1 -type f -name 'Screenshot_*.png' -print 2>/dev/null | sort | tail -n 1 || true)
+  [[ -n $latest ]] || return 1
+  printf '%s\n' "$latest"
+}
+
+open_file() {
+  local file=$1
+  nohup xdg-open "$file" >/dev/null 2>&1 &
+}
+
+edit_file() {
+  local file=$1
+  nohup spectacle --edit-existing "$file" >/dev/null 2>&1 &
+}
+
+case $mode in
+  gui)
+    exec spectacle --launchonly
+    ;;
+  open-last)
+    file=$(latest_screenshot) || {
+      notify_error "No saved screenshot found."
+      exit 0
+    }
+    open_file "$file"
+    exit 0
+    ;;
+  edit-last)
+    file=$(latest_screenshot) || {
+      notify_error "No saved screenshot found."
+      exit 0
+    }
+    edit_file "$file"
+    exit 0
+    ;;
+  window | region | fullscreen)
+    ;;
+  *)
+    printf 'Usage: %s window|region|fullscreen|gui|open-last|edit-last\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+timestamp=$(date +%Y%m%d_%H%M%S)
+file=$screenshot_dir/Screenshot_${timestamp}_${mode}_$$.png
+
+case $mode in
+  window)
+    capture_args=(--activewindow)
+    message="Active window copied."
+    ;;
+  region)
+    capture_args=(--region)
+    message="Drag a region to copy it."
+    ;;
+  fullscreen)
+    capture_args=(--fullscreen)
+    message="Full screen copied."
+    ;;
+esac
+
+# In region/window modes, Spectacle exits non-zero if the user cancels. Treat that
+# as a quiet no-op rather than an error notification.
+if ! spectacle "${capture_args[@]}" --background --nonotify --output "$file" >/tmp/kde-screenshot.log 2>&1; then
+  rm -f -- "$file"
+  exit 0
+fi
+
+if [[ ! -s $file ]]; then
+  notify_error "Spectacle did not create an image."
+  exit 1
+fi
+
+if ! wl-copy --type image/png <"$file"; then
+  notify_error "Captured image, but failed to copy it to the Wayland clipboard. Saved to: $file"
+  exit 1
+fi
+
+printf '%s\n' "$file" >"$last_file"
+
+body="Copied to clipboard.\nSaved to: $file"
+(
+  action=$(timeout 30s notify-send \
+    --app-name="Screenshot" \
+    --icon="$file" \
+    --expire-time=5000 \
+    --action=open="Open" \
+    --action=edit="Annotate" \
+    "Screenshot" \
+    "$message\n$body" 2>/dev/null || true)
+
+  case $action in
+    open)
+      open_file "$file"
+      ;;
+    edit)
+      edit_file "$file"
+      ;;
+  esac
+) >/dev/null 2>&1 &

@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Ensure KDE Plasma Print-screen shortcuts use the clipboard-first wrapper.
+# KGlobalAccel lives inside kwin_wayland on Plasma 6, so shortcut state must be
+# updated through D-Bus instead of hand-editing ~/.config/kglobalshortcutsrc.
+#
+# Usage:
+#   kde-screenshot-shortcuts-ensure          # repair bindings if needed
+#   kde-screenshot-shortcuts-ensure --check  # verify only
+
+GDBUS=/usr/bin/gdbus
+KBUILDSYCOCA=/usr/bin/kbuildsycoca6
+APPLICATIONS_DIR=$HOME/.local/share/applications
+CHECK_ONLY=false
+
+case ${1-} in
+  "") ;;
+  --check) CHECK_ONLY=true ;;
+  -h | --help)
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    printf 'Usage: %s [--check]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+actions_to_clear=(
+  "['org.kde.spectacle.desktop','ActiveWindowScreenShot','Spectacle','Capture Active Window']"
+  "['org.kde.spectacle.desktop','FullScreenScreenShot','Spectacle','Capture Entire Desktop']"
+  "['org.kde.spectacle.desktop','RectangularRegionScreenShot','Spectacle','Capture Rectangular Region']"
+  "['org.kde.spectacle.desktop','OpenWithoutScreenshot','Spectacle','Launch Spectacle without capturing']"
+  "['kde-screenshot-region.desktop','_launch','Screenshot Region','Screenshot Region']"
+)
+
+# Format: component|action|component-name|action-name|qt-encoded-shortcut
+bindings=(
+  'org.kde.spectacle.desktop|RectangularRegionScreenShot|Spectacle|Capture Rectangular Region|16777225'
+  'kde-screenshot-window.desktop|_launch|Screenshot Window|Screenshot Window|50331657'
+  'kde-screenshot-fullscreen.desktop|_launch|Screenshot Fullscreen|Screenshot Fullscreen|83886089'
+  'kde-screenshot-gui.desktop|_launch|Screenshot GUI|Screenshot GUI|285212681'
+)
+
+gdbus_kglobalaccel() {
+  "$GDBUS" call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel "$@"
+}
+
+wait_for_kglobalaccel() {
+  local _
+  for _ in {1..60}; do
+    if "$GDBUS" call \
+      --session \
+      --dest org.freedesktop.DBus \
+      --object-path / \
+      --method org.freedesktop.DBus.GetNameOwner \
+      org.kde.kglobalaccel >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  printf 'Timed out waiting for org.kde.kglobalaccel on the session bus.\n' >&2
+  return 1
+}
+
+split_binding() {
+  local spec=$1
+  IFS='|' read -r component action component_name action_name key <<<"$spec"
+}
+
+action_id() {
+  printf "['%s','%s','%s','%s']" "$component" "$action" "$component_name" "$action_name"
+}
+
+shortcut_owner() {
+  local shortcut_key=$1
+  gdbus_kglobalaccel --method org.kde.KGlobalAccel.action "$shortcut_key" 2>/dev/null || true
+}
+
+binding_is_correct() {
+  local spec=$1 owner expected
+  split_binding "$spec"
+  expected="['$component', '$action', '$component_name', '$action_name']"
+  owner=$(shortcut_owner "$key")
+  [[ $owner == *"$expected"* ]]
+}
+
+all_bindings_correct() {
+  local spec
+  for spec in "${bindings[@]}"; do
+    if ! binding_is_correct "$spec"; then
+      return 1
+    fi
+  done
+}
+
+check_desktop_files() {
+  local missing=0 spec
+  for spec in "${bindings[@]}"; do
+    split_binding "$spec"
+    if [[ $action == _launch && ! -f $APPLICATIONS_DIR/$component ]]; then
+      printf 'Missing launcher: %s\n' "$APPLICATIONS_DIR/$component" >&2
+      missing=1
+    fi
+  done
+  return "$missing"
+}
+
+repair_bindings() {
+  local action_id_value spec
+
+  # Keep KDE's service cache aware of the launcher files. Failure is not fatal:
+  # the D-Bus registration below is the authoritative step.
+  "$KBUILDSYCOCA" --noincremental >/dev/null 2>&1 || true
+
+  # Clear every previously managed action before assigning the desired keys.
+  # This also removes the obsolete custom region launcher, which could start a
+  # second Spectacle process over the native single-instance region overlay.
+  for action_id_value in "${actions_to_clear[@]}"; do
+    gdbus_kglobalaccel \
+      --method org.kde.KGlobalAccel.setForeignShortcut \
+      "$action_id_value" \
+      '[]' >/dev/null
+  done
+
+  for spec in "${bindings[@]}"; do
+    split_binding "$spec"
+    action_id_value=$(action_id)
+
+    # Native Spectacle actions are already registered. Custom .desktop launchers
+    # need explicit registration before KGlobalAccel will dispatch their keys.
+    if [[ $action == _launch ]]; then
+      gdbus_kglobalaccel --method org.kde.KGlobalAccel.doRegister "$action_id_value" >/dev/null || true
+    fi
+
+    gdbus_kglobalaccel \
+      --method org.kde.KGlobalAccel.setForeignShortcut \
+      "$action_id_value" \
+      "[$key]" >/dev/null
+
+    # SetPresent is needed only for custom launcher components. Calling it for
+    # a native Spectacle action clears the key that setForeignShortcut just set.
+    if [[ $action == _launch ]]; then
+      gdbus_kglobalaccel \
+        --method org.kde.KGlobalAccel.setShortcut \
+        "$action_id_value" \
+        "[$key]" \
+        2 >/dev/null || true
+    fi
+  done
+}
+
+print_status() {
+  local spec owner state
+  for spec in "${bindings[@]}"; do
+    split_binding "$spec"
+    owner=$(shortcut_owner "$key")
+    state=BAD
+    if binding_is_correct "$spec"; then
+      state=OK
+    fi
+    printf '%-3s key=%s expected=%s:%s owner=%s\n' "$state" "$key" "$component" "$action" "$owner"
+  done
+}
+
+main() {
+  wait_for_kglobalaccel
+  check_desktop_files
+
+  if all_bindings_correct; then
+    print_status
+    return 0
+  fi
+
+  if [[ $CHECK_ONLY == true ]]; then
+    print_status
+    return 1
+  fi
+
+  repair_bindings
+
+  if ! all_bindings_correct; then
+    print_status
+    printf 'Failed to repair one or more screenshot shortcuts.\n' >&2
+    return 1
+  fi
+
+  print_status
+}
+
+main "$@"

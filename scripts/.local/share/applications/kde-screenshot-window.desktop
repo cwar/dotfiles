@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Screenshot Window
+Comment=Capture the active window, copy the screenshot to clipboard, and save it
+Exec=/home/cwar/.local/bin/kde-screenshot window
+Icon=org.kde.spectacle
+Terminal=false
+StartupNotify=false
+X-KDE-GlobalAccel-CommandShortcut=true
+Categories=Utility;

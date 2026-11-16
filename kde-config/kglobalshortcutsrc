@@ -312,6 +312,18 @@ _launch=Meta+Shift+B
 [services][kde-lazygit.desktop]
 _launch=Meta+Shift+G
 
+[services][kde-screenshot-fullscreen.desktop]
+_launch=Ctrl+Print
+
+[services][kde-screenshot-gui.desktop]
+_launch=Meta+Print
+
+[services][kde-screenshot-region.desktop]
+_launch=Shift+Print
+
+[services][kde-screenshot-window.desktop]
+_launch=Print
+
 [services][kde-tmux.desktop]
 _launch=Meta+Return
 
@@ -326,6 +338,13 @@ _launch=Meta+Shift+F
 
 [services][org.kde.konsole.desktop]
 _launch=Meta+Alt+Return\tCtrl+Alt+T
+
+[services][org.kde.spectacle.desktop]
+ActiveWindowScreenShot=none
+CurrentMonitorScreenShot=
+FullScreenScreenShot=none
+RectangularRegionScreenShot=none
+_launch=none
 
 [services][spotify_spotify.desktop]
 _launch=Meta+Shift+M

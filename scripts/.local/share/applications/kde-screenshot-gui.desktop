@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Screenshot GUI
+Comment=Open Spectacle for editing, viewing, and advanced screenshot options
+Exec=/home/cwar/.local/bin/kde-screenshot gui
+Icon=org.kde.spectacle
+Terminal=false
+StartupNotify=false
+X-KDE-GlobalAccel-CommandShortcut=true
+Categories=Utility;

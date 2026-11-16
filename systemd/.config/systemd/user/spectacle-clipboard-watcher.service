@@ -1,0 +1,14 @@
+[Unit]
+Description=Enhanced Spectacle clipboard screenshot notifications
+Documentation=man:dbus-monitor(1) man:notify-send(1)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/cwar/.local/bin/spectacle-clipboard-watcher
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
