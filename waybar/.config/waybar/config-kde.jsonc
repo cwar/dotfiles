@@ -1,11 +1,18 @@
 {
-  // KDE Plasma (Wayland / KWin) layout. Launched explicitly by the
-  // waybar.service systemd unit:  waybar -c config-kde.jsonc -s style-kde.css
+  // KDE Plasma (Wayland / KWin) layout. Launched by the waybar.service
+  // systemd unit through scripts/waybar-kde-launch, which generates a runtime
+  // copy of this file with an output selector matching the current dock state.
   //
   // Workspaces = KWin virtual desktops via a custom daemon + per-desktop
   // clickable modules (occupied-only). See scripts/kwin-workspaces and
   // scripts/kwin-occupancy.js.
   "include": ["/home/cwar/.config/waybar/common.jsonc"],
+
+  // Fallback for direct launches. The KDE launcher rewrites this in its
+  // generated runtime config: external connected => "!eDP-1"; laptop-only =>
+  // "eDP-1". Keeping the external-only fallback preserves the docked default
+  // if someone bypasses the launcher.
+  "output": "!eDP-1",
 
   "modules-left": [
     "custom/kwin-daemon",
@@ -13,7 +20,7 @@
     "custom/ws5", "custom/ws6", "custom/ws7", "custom/ws8", "custom/ws9",
     "custom/ws10"
   ],
-  "modules-center": ["clock"],
+  "modules-center": ["custom/sysupdate", "clock"],
   "modules-right": ["disk", "network", "wireplumber", "battery", "tray"],
 
   // Hidden supervisor: hosts the org.waybar.Kwin D-Bus service, loads the KWin

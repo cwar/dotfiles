@@ -82,5 +82,7 @@ Negative / risks:
 Follow-up:
 
 - Port remaining status signals (calendar next-meeting, action-needed,
-  Pi stuck detector, `healthcheck`, Ubuntu update indicator) to KDE-appropriate
-  mechanisms (tray, notifications, or KRunner).
+  Pi stuck detector, `healthcheck`) to KDE-appropriate mechanisms (tray,
+  notifications, or KRunner).
+- ~~Ubuntu update indicator~~ — done; see ADR-002 (`sysupdate-check` /
+  `sysupdate-launch`, `custom/sysupdate` in `common.jsonc`).

@@ -6,7 +6,7 @@ After=graphical-session.target plasma-kwin_wayland.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/waybar -c %h/.config/waybar/config-kde.jsonc -s %h/.config/waybar/style-kde.css
+ExecStart=%h/.config/waybar/scripts/waybar-kde-launch
 Restart=on-failure
 RestartSec=2
 

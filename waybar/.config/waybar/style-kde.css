@@ -2,19 +2,21 @@
 
 /* KDE: per-desktop workspace buttons (custom/ws0..ws10) */
 .ws {
-  padding: 0 8px;
-  color: #6272a4;
+  padding: 0 10px;
+  margin: 4px 2px;
+  color: @theme_fg_dim;
   background: transparent;
+  border-radius: 8px;
+  border-bottom: 2px solid transparent;
 }
 
 .ws.active {
-  color: #f8f8f2;
-  background: #44475a;
-  border-radius: 4px;
+  color: @theme_fg;
+  background: alpha(@theme_accent, 0.22);
+  border-bottom: 2px solid @theme_accent;
 }
 
 .ws:hover {
-  color: #f8f8f2;
-  background: #44475a;
-  border-radius: 4px;
+  color: @theme_fg;
+  background: alpha(@theme_secondary, 0.30);
 }
